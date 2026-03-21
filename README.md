@@ -105,39 +105,310 @@ La librería proporciona utilidades para construir comandos OAuth2 mediante [Cob
 
 - [`NewOAuth2Command`](oauth2.go): crea un comando raíz `oauth2` que agrupa los subcomandos de un proveedor. Requiere que se proporcionen los comandos obligatorios `get-token` y `get-url`.
 
-Ejemplo de uso:
+Ejemplo de implementación completa para un provider:
 
 ```go
-// Crear subcomandos para un proveedor
-tokenCmd := &cobra.Command{
-    Use:   "get-token",
-    Short: "Obtiene un token de acceso",
-    RunE: func(cmd *cobra.Command, args []string) error {
-        // Implementación del comando
-        return nil
-    },
+package main
+
+import (
+    "fmt"
+    "os"
+
+    "github.com/spf13/cobra"
+    grantprovider "github.com/KaribuLab/grant-provider"
+)
+
+// GitHubHandler implementa CommandHandler para procesar comandos OAuth2.
+type GitHubHandler struct{}
+
+// Invoke recibe el InvokeCommand ya decodificado desde stdin.
+func (h *GitHubHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
+    // Extraer arguments del input (puede ser nil)
+    var arguments []grantprovider.CommandArgument
+    if input.Arguments != nil {
+        arguments = *input.Arguments
+    }
+
+    // Enrutar según el comando recibido
+    switch input.Command {
+    case "get-token":
+        return h.handleGetToken(arguments)
+    case "get-url":
+        return h.handleGetURL(arguments)
+    default:
+        return grantprovider.InvokeResponse{
+            Result: grantprovider.Result{
+                Success: false,
+                Errors:  []string{"comando desconocido"},
+            },
+        }, nil
+    }
 }
 
-urlCmd := &cobra.Command{
-    Use:   "get-url",
-    Short: "Genera URL de autorización",
-    RunE: func(cmd *cobra.Command, args []string) error {
-        // Implementación del comando
-        return nil
-    },
+func (h *GitHubHandler) handleGetToken(arguments []grantprovider.CommandArgument) (grantprovider.InvokeResponse, error) {
+    // Validar argumentos requeridos
+    validationErr, err := grantprovider.ValidateOAuth2GetToken(arguments)
+    if err != nil {
+        return grantprovider.InvokeResponse{}, err
+    }
+    if len(validationErr.Violations) > 0 {
+        return grantprovider.InvokeResponse{
+            Result: grantprovider.Result{
+                Success: false,
+                Errors:  grantprovider.ListMap(validationErr.Violations, func(v grantprovider.FieldViolation) string { return v.Rule }),
+            },
+        }, nil
+    }
+
+    // Lógica específica del provider: intercambiar código por token
+    // Aquí se haría el POST al endpoint de token del provider
+    return grantprovider.InvokeResponse{
+        Result: grantprovider.Result{Success: true, Message: "token obtenido"},
+        Data: &grantprovider.GetAccessTokenData{
+            AccessToken:  "gho_xxxxxxxxxxxx",
+            RefreshToken: "ghr_xxxxxxxxxxxx",
+            ExpiresIn:    3600,
+        },
+    }, nil
 }
 
-// Crear comando raíz OAuth2
-rootCmd, err := grantprovider.NewOAuth2Command("github", grantprovider.OAuth2Commands{
-    "get-token": tokenCmd,
-    "get-url":   urlCmd,
-})
-if err != nil {
-    log.Fatal(err)
+func (h *GitHubHandler) handleGetURL(arguments []grantprovider.CommandArgument) (grantprovider.InvokeResponse, error) {
+    // Validar argumentos requeridos
+    validationErr, err := grantprovider.ValidateOAuth2GetURL(arguments)
+    if err != nil {
+        return grantprovider.InvokeResponse{}, err
+    }
+    if len(validationErr.Violations) > 0 {
+        return grantprovider.InvokeResponse{
+            Result: grantprovider.Result{
+                Success: false,
+                Errors:  grantprovider.ListMap(validationErr.Violations, func(v grantprovider.FieldViolation) string { return v.Rule }),
+            },
+        }, nil
+    }
+
+    // Extraer valores de arguments
+    argsMap := make(map[string]string)
+    for _, arg := range arguments {
+        argsMap[arg.Name] = arg.Value
+    }
+
+    // Construir URL de autorización
+    authURL := fmt.Sprintf(
+        "https://github.com/login/oauth/authorize?response_type=%s&client_id=%s&redirect_uri=%s&scope=%s&state=%s",
+        argsMap["response_type"],
+        argsMap["client_id"],
+        argsMap["redirect_uri"],
+        argsMap["scope"],
+        argsMap["state"],
+    )
+
+    return grantprovider.InvokeResponse{
+        Result: grantprovider.Result{Success: true, Message: "URL generada"},
+        Data:   map[string]string{"auth_url": authURL},
+    }, nil
 }
 
-// Ejecutar
-rootCmd.Execute()
+func main() {
+    // Crear comando get-token: lee JSON desde stdin, delega al handler
+    tokenCmd := &cobra.Command{
+        Use:   "get-token",
+        Short: "Obtiene un token de acceso",
+        RunE: func(cmd *cobra.Command, args []string) error {
+            handler := &GitHubHandler{}
+            invoker := grantprovider.NewCommandInvoker(handler)
+            response, err := invoker.Run(os.Stdin)
+            if err != nil {
+                // Si hay error de validación, response ya contiene los detalles
+                _ = grantprovider.ToJSON(response, os.Stdout)
+                return err
+            }
+            return grantprovider.ToJSON(response, os.Stdout)
+        },
+    }
+
+    // Crear comando get-url: lee JSON desde stdin, delega al handler
+    urlCmd := &cobra.Command{
+        Use:   "get-url",
+        Short: "Genera URL de autorización",
+        RunE: func(cmd *cobra.Command, args []string) error {
+            handler := &GitHubHandler{}
+            invoker := grantprovider.NewCommandInvoker(handler)
+            response, err := invoker.Run(os.Stdin)
+            if err != nil {
+                _ = grantprovider.ToJSON(response, os.Stdout)
+                return err
+            }
+            return grantprovider.ToJSON(response, os.Stdout)
+        },
+    }
+
+    // Crear comando raíz OAuth2 para el provider
+    rootCmd, err := grantprovider.NewOAuth2Command("github", grantprovider.OAuth2Commands{
+        "get-token": tokenCmd,
+        "get-url":   urlCmd,
+    })
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
+
+    // Ejecutar
+    if err := rootCmd.Execute(); err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
+}
+```
+
+**Flujo de datos:**
+
+```
+stdin (JSON) → CommandInvoker.Run → FromJSON → CommandHandler.Invoke → ToJSON → stdout
+```
+
+Ejemplo de entrada JSON esperada:
+
+```json
+{
+  "command": "get-token",
+  "provider": "github",
+  "session_id": "sess-123",
+  "arguments": [
+    {"name": "code", "value": "abc123def456"}
+  ]
+}
+```
+
+**Patrón recomendado para múltiples providers:**
+
+Separar el handler del comando para facilitar testing y reuso:
+
+```go
+// github/handler.go
+package github
+
+import (
+    "fmt"
+    "net/http"
+    "net/url"
+
+    grantprovider "github.com/KaribuLab/grant-provider"
+)
+
+type Handler struct {
+    ClientID     string
+    ClientSecret string
+}
+
+func (h *Handler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
+    var arguments []grantprovider.CommandArgument
+    if input.Arguments != nil {
+        arguments = *input.Arguments
+    }
+
+    switch input.Command {
+    case "get-token":
+        return h.getToken(arguments)
+    case "get-url":
+        return h.getURL(arguments)
+    default:
+        return grantprovider.InvokeResponse{
+            Result: grantprovider.Result{
+                Success: false,
+                Errors:  []string{"comando no soportado: " + input.Command},
+            },
+        }, nil
+    }
+}
+
+func (h *Handler) getToken(arguments []grantprovider.CommandArgument) (grantprovider.InvokeResponse, error) {
+    validationErr, err := grantprovider.ValidateOAuth2GetToken(arguments)
+    if err != nil || len(validationErr.Violations) > 0 {
+        return grantprovider.InvokeResponse{
+            Result: grantprovider.Result{
+                Success: false,
+                Errors:  []string{"argumentos inválidos"},
+            },
+        }, nil
+    }
+
+    // Lógica específica del provider...
+    return grantprovider.InvokeResponse{
+        Result: grantprovider.Result{Success: true},
+        Data:   &grantprovider.GetAccessTokenData{AccessToken: "token"},
+    }, nil
+}
+
+func (h *Handler) getURL(arguments []grantprovider.CommandArgument) (grantprovider.InvokeResponse, error) {
+    validationErr, err := grantprovider.ValidateOAuth2GetURL(arguments)
+    if err != nil || len(validationErr.Violations) > 0 {
+        return grantprovider.InvokeResponse{
+            Result: grantprovider.Result{
+                Success: false,
+                Errors:  []string{"argumentos inválidos"},
+            },
+        }, nil
+    }
+
+    // Construir URL...
+    return grantprovider.InvokeResponse{
+        Result: grantprovider.Result{Success: true},
+        Data:   map[string]string{"auth_url": "https://..."},
+    }, nil
+}
+```
+
+Y en el punto de entrada del provider:
+
+```go
+// github/main.go
+package main
+
+import (
+    "fmt"
+    "os"
+
+    "github.com/spf13/cobra"
+    grantprovider "github.com/KaribuLab/grant-provider"
+    "github.com/KaribuLab/provider-github/github"
+)
+
+func main() {
+    handler := &github.Handler{
+        ClientID:     os.Getenv("GITHUB_CLIENT_ID"),
+        ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+    }
+
+    commands := grantprovider.OAuth2Commands{
+        "get-token": buildCmd(handler, "get-token"),
+        "get-url":   buildCmd(handler, "get-url"),
+    }
+
+    rootCmd, err := grantprovider.NewOAuth2Command("github", commands)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
+
+    if err := rootCmd.Execute(); err != nil {
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
+}
+
+func buildCmd(handler *github.Handler, commandName string) *cobra.Command {
+    return &cobra.Command{
+        Use:   commandName,
+        Short: fmt.Sprintf("OAuth2 %s para GitHub", commandName),
+        RunE: func(cmd *cobra.Command, args []string) error {
+            invoker := grantprovider.NewCommandInvoker(handler)
+            response, err := invoker.Run(os.Stdin)
+            _ = grantprovider.ToJSON(response, os.Stdout)
+            return err
+        },
+    }
+}
 ```
 
 Si falta algún comando requerido, `NewOAuth2Command` retorna error indicando cuáles faltan.
