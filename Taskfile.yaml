@@ -1,0 +1,10 @@
+version: '3'
+
+tasks:
+  test:
+    desc: Ejecuta los tests del paquete
+    cmd: go test ./...
+
+  test:verbose:
+    desc: Ejecuta los tests con salida detallada
+    cmd: go test -v ./...
