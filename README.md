@@ -21,6 +21,8 @@ go get github.com/KaribuLab/grant-provider
 | [`CommandHandler`](command.go) | Tu implementación: recibe `InvokeCommand` y devuelve `InvokeResponse`. |
 | [`CommandInvoker`](command.go) | Lee JSON desde un `io.Reader` (p. ej. `stdin`), valida y delega en el handler. |
 | [`NewOAuth2Command`](oauth2.go) | Crea comando raíz OAuth2 con subcomandos `get-token` y `get-url`. |
+| [`ValidateOAuth2GetURL`](oauth2.go) | Valida argumentos requeridos para generar URL de autorización. |
+| [`ValidateOAuth2GetToken`](oauth2.go) | Valida argumentos requeridos para obtener token de acceso. |
 
 ## Uso rápido: invocador por stdin
 
@@ -139,6 +141,40 @@ rootCmd.Execute()
 ```
 
 Si falta algún comando requerido, `NewOAuth2Command` retorna error indicando cuáles faltan.
+
+### Validación de argumentos OAuth2
+
+La librería proporciona validadores reutilizables para verificar que los argumentos de los comandos OAuth2 cumplan con los requisitos mínimos:
+
+- [`ValidateOAuth2GetURL`](oauth2.go): valida que estén presentes los parámetros obligatorios para generar una URL de autorización.
+  - Requiere: `response_type`, `client_id`, `redirect_uri`, `scope`, `state`.
+- [`ValidateOAuth2GetToken`](oauth2.go): valida que esté presente el parámetro obligatorio para intercambiar el código por un token.
+  - Requiere: `code`.
+  - Nota: `grant_type` no se valida porque se asume fijo como `code` en la lógica del proveedor.
+
+Ambas funciones retornan [`ValidationError`](validation.go) con la lista de violaciones para campos faltantes:
+
+```go
+arguments := []grantprovider.CommandArgument{
+    {Name: "response_type", Value: "code"},
+    {Name: "client_id", Value: "my-client-id"},
+    {Name: "redirect_uri", Value: "https://example.com/callback"},
+    {Name: "scope", Value: "openid email"},
+    {Name: "state", Value: "abc123"},
+}
+
+validationErr, err := grantprovider.ValidateOAuth2GetURL(arguments)
+if err != nil {
+    // Error interno del validador
+    return err
+}
+if len(validationErr.Violations) > 0 {
+    // Procesar violaciones: cada una tiene Field, Namespace, Rule
+    for _, v := range validationErr.Violations {
+        fmt.Printf("Campo %s: regla %s incumplida\n", v.Field, v.Rule)
+    }
+}
+```
 
 ## Tipos de datos de ejemplo
 
