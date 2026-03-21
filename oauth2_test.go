@@ -78,4 +78,153 @@ func TestNewOAuth2Command_MissingBothRequiredCommands(t *testing.T) {
 	}
 }
 
+// ========== Pruebas para ValidateOAuth2GetURL ==========
+
+func TestValidateOAuth2GetURL_Success(t *testing.T) {
+	arguments := []CommandArgument{
+		{Name: "response_type", Value: "code"},
+		{Name: "client_id", Value: "my-client-id"},
+		{Name: "redirect_uri", Value: "https://example.com/callback"},
+		{Name: "scope", Value: "openid profile email"},
+		{Name: "state", Value: "random-state-123"},
+	}
+
+	validationErr, err := ValidateOAuth2GetURL(arguments)
+	if err != nil {
+		t.Fatalf("se esperaba error nil de validación, se obtuvo: %v", err)
+	}
+	if len(validationErr.Violations) > 0 {
+		t.Fatalf("se esperaba sin violaciones, se obtuvieron: %+v", validationErr.Violations)
+	}
+}
+
+func TestValidateOAuth2GetURL_MissingSingleParam(t *testing.T) {
+	arguments := []CommandArgument{
+		{Name: "response_type", Value: "code"},
+		{Name: "client_id", Value: "my-client-id"},
+		{Name: "redirect_uri", Value: "https://example.com/callback"},
+		{Name: "scope", Value: "openid profile email"},
+		// Falta "state"
+	}
+
+	validationErr, err := ValidateOAuth2GetURL(arguments)
+	if err != nil {
+		t.Fatalf("se esperaba error nil de validación, se obtuvo: %v", err)
+	}
+	if len(validationErr.Violations) != 1 {
+		t.Fatalf("se esperaba 1 violación, se obtuvieron: %d", len(validationErr.Violations))
+	}
+	if validationErr.Violations[0].Field != "state" {
+		t.Fatalf("se esperaba violación en campo 'state', se obtuvo: %s", validationErr.Violations[0].Field)
+	}
+	if validationErr.Violations[0].Rule != "required" {
+		t.Fatalf("se esperaba regla 'required', se obtuvo: %s", validationErr.Violations[0].Rule)
+	}
+}
+
+func TestValidateOAuth2GetURL_MissingMultipleParams(t *testing.T) {
+	arguments := []CommandArgument{
+		{Name: "response_type", Value: "code"},
+		{Name: "client_id", Value: "my-client-id"},
+		// Faltan "redirect_uri", "scope", "state"
+	}
+
+	validationErr, err := ValidateOAuth2GetURL(arguments)
+	if err != nil {
+		t.Fatalf("se esperaba error nil de validación, se obtuvo: %v", err)
+	}
+	if len(validationErr.Violations) != 3 {
+		t.Fatalf("se esperaban 3 violaciones, se obtuvieron: %d", len(validationErr.Violations))
+	}
+
+	// Verificar que todos los campos faltantes están en las violaciones
+	missingFields := make(map[string]bool)
+	for _, v := range validationErr.Violations {
+		missingFields[v.Field] = true
+	}
+	if !missingFields["redirect_uri"] || !missingFields["scope"] || !missingFields["state"] {
+		t.Fatalf("violaciones inesperadas: %+v", validationErr.Violations)
+	}
+}
+
+func TestValidateOAuth2GetURL_EmptyArguments(t *testing.T) {
+	arguments := []CommandArgument{}
+
+	validationErr, err := ValidateOAuth2GetURL(arguments)
+	if err != nil {
+		t.Fatalf("se esperaba error nil de validación, se obtuvo: %v", err)
+	}
+	if len(validationErr.Violations) != 5 {
+		t.Fatalf("se esperaban 5 violaciones (todos los campos faltantes), se obtuvieron: %d", len(validationErr.Violations))
+	}
+}
+
+// ========== Pruebas para ValidateOAuth2GetToken ==========
+
+func TestValidateOAuth2GetToken_Success(t *testing.T) {
+	arguments := []CommandArgument{
+		{Name: "code", Value: "auth-code-abc123"},
+	}
+
+	validationErr, err := ValidateOAuth2GetToken(arguments)
+	if err != nil {
+		t.Fatalf("se esperaba error nil de validación, se obtuvo: %v", err)
+	}
+	if len(validationErr.Violations) > 0 {
+		t.Fatalf("se esperaba sin violaciones, se obtuvieron: %+v", validationErr.Violations)
+	}
+}
+
+func TestValidateOAuth2GetToken_WithExtraParams(t *testing.T) {
+	// El validador no debe rechazar parámetros adicionales como grant_type
+	arguments := []CommandArgument{
+		{Name: "code", Value: "auth-code-abc123"},
+		{Name: "grant_type", Value: "code"},
+		{Name: "redirect_uri", Value: "https://example.com/callback"},
+	}
+
+	validationErr, err := ValidateOAuth2GetToken(arguments)
+	if err != nil {
+		t.Fatalf("se esperaba error nil de validación, se obtuvo: %v", err)
+	}
+	if len(validationErr.Violations) > 0 {
+		t.Fatalf("se esperaba sin violaciones (grant_type es opcional), se obtuvieron: %+v", validationErr.Violations)
+	}
+}
+
+func TestValidateOAuth2GetToken_MissingCode(t *testing.T) {
+	arguments := []CommandArgument{
+		{Name: "redirect_uri", Value: "https://example.com/callback"},
+	}
+
+	validationErr, err := ValidateOAuth2GetToken(arguments)
+	if err != nil {
+		t.Fatalf("se esperaba error nil de validación, se obtuvo: %v", err)
+	}
+	if len(validationErr.Violations) != 1 {
+		t.Fatalf("se esperaba 1 violación, se obtuvieron: %d", len(validationErr.Violations))
+	}
+	if validationErr.Violations[0].Field != "code" {
+		t.Fatalf("se esperaba violación en campo 'code', se obtuvo: %s", validationErr.Violations[0].Field)
+	}
+	if validationErr.Violations[0].Rule != "required" {
+		t.Fatalf("se esperaba regla 'required', se obtuvo: %s", validationErr.Violations[0].Rule)
+	}
+}
+
+func TestValidateOAuth2GetToken_EmptyArguments(t *testing.T) {
+	arguments := []CommandArgument{}
+
+	validationErr, err := ValidateOAuth2GetToken(arguments)
+	if err != nil {
+		t.Fatalf("se esperaba error nil de validación, se obtuvo: %v", err)
+	}
+	if len(validationErr.Violations) != 1 {
+		t.Fatalf("se esperaba 1 violación (code faltante), se obtuvieron: %d", len(validationErr.Violations))
+	}
+	if validationErr.Violations[0].Field != "code" {
+		t.Fatalf("se esperaba violación en campo 'code', se obtuvo: %s", validationErr.Violations[0].Field)
+	}
+}
+
 
