@@ -20,6 +20,7 @@ go get github.com/KaribuLab/grant-provider
 | [`InvokeResponse`](invoke.go) | Salida: `result` embebido, `data` opcional (`any`) y `additional_data` opcional. |
 | [`CommandHandler`](command.go) | Tu implementación: recibe `InvokeCommand` y devuelve `InvokeResponse`. |
 | [`CommandInvoker`](command.go) | Lee JSON desde un `io.Reader` (p. ej. `stdin`), valida y delega en el handler. |
+| [`NewOAuth2Command`](oauth2.go) | Crea comando raíz OAuth2 con subcomandos `get-token` y `get-url`. |
 
 ## Uso rápido: invocador por stdin
 
@@ -85,10 +86,8 @@ if list, ok := grantprovider.FieldViolations(err); ok {
 
 ## Configuración en disco
 
-- [`GetConfigDir`](config.go): devuelve `~/.grant`, creando el directorio si no existe.
+- [`GetConfigDir`](config.go): devuelve `~/.grant` (creando el directorio si no existe) o un error si falla.
 - [`GetConfig`](config.go): lee `~/.grant/<fileName>` en `dest`; si el archivo no existe, escribe la configuración por defecto y rellena `dest`.
-
-**Nota:** [`GetConfigDir`](config.go) puede llamar a `log.Fatal` si no puede obtener el directorio home o crear `~/.grant`. [`GetConfig`](config.go) usa `log` para avisos/trazas según el nivel configurado en logrus.
 
 ## Registro de hooks
 
@@ -98,14 +97,57 @@ if list, ok := grantprovider.FieldViolations(err); ok {
 
 Es un contenedor; la lógica de encaminamiento por `ID` o por comando queda en tu aplicación.
 
+## Comandos OAuth2
+
+La librería proporciona utilidades para construir comandos OAuth2 mediante [Cobra](https://github.com/spf13/cobra).
+
+- [`NewOAuth2Command`](oauth2.go): crea un comando raíz `oauth2` que agrupa los subcomandos de un proveedor. Requiere que se proporcionen los comandos obligatorios `get-token` y `get-url`.
+
+Ejemplo de uso:
+
+```go
+// Crear subcomandos para un proveedor
+tokenCmd := &cobra.Command{
+    Use:   "get-token",
+    Short: "Obtiene un token de acceso",
+    RunE: func(cmd *cobra.Command, args []string) error {
+        // Implementación del comando
+        return nil
+    },
+}
+
+urlCmd := &cobra.Command{
+    Use:   "get-url",
+    Short: "Genera URL de autorización",
+    RunE: func(cmd *cobra.Command, args []string) error {
+        // Implementación del comando
+        return nil
+    },
+}
+
+// Crear comando raíz OAuth2
+rootCmd, err := grantprovider.NewOAuth2Command("github", grantprovider.OAuth2Commands{
+    "get-token": tokenCmd,
+    "get-url":   urlCmd,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Ejecutar
+rootCmd.Execute()
+```
+
+Si falta algún comando requerido, `NewOAuth2Command` retorna error indicando cuáles faltan.
+
 ## Tipos de datos de ejemplo
 
-- [`GetAccessTokenData`](oauth2.go): ejemplo de payload para tokens OAuth2 en `InvokeResponse.Data` (puedes definir otros structs y asignarlos a `Data` como `any`).
+- [`GetAccessTokenData`](oauth2.go): estructura con los campos típicos de un token OAuth2 (`access_token`, `refresh_token`, `expires_in`). Útil como tipo concreto para `InvokeResponse.Data`.
 
 ## Dependencias directas relevantes
 
 - [`github.com/go-playground/validator/v10`](https://github.com/go-playground/validator) — validación por etiquetas.
-- [`github.com/sirupsen/logrus`](https://github.com/sirupsen/logrus) — logging en configuración.
+- [`github.com/spf13/cobra`](https://github.com/spf13/cobra) — framework para comandos CLI (usado en [`NewOAuth2Command`](oauth2.go)).
 
 ## Documentación en código
 
