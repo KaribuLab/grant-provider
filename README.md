@@ -20,7 +20,7 @@ go get github.com/KaribuLab/grant-provider
 | [`InvokeResponse`](invoke.go) | Salida: `result` embebido, `data` opcional (`any`) y `additional_data` opcional. |
 | [`CommandHandler`](command.go) | Tu implementación: recibe `InvokeCommand` y devuelve `InvokeResponse`. |
 | [`CommandInvoker`](command.go) | Lee JSON desde un `io.Reader` (p. ej. `stdin`), valida y delega en el handler. |
-| [`NewOAuth2Command`](oauth2.go) | Crea comando raíz OAuth2 con subcomandos `get-token` y `get-url`. |
+| [`NewOAuth2Command`](oauth2.go) | Crea el comando raíz `oauth2` con subcomandos `get-token` y `get-url`. Úsalo directamente como root del binario. |
 | [`ValidateOAuth2GetURL`](oauth2.go) | Valida argumentos requeridos para generar URL de autorización. |
 | [`ValidateOAuth2GetToken`](oauth2.go) | Valida argumentos requeridos para obtener token de acceso. |
 
@@ -103,7 +103,7 @@ Es un contenedor; la lógica de encaminamiento por `ID` o por comando queda en t
 
 La librería proporciona utilidades para construir comandos OAuth2 mediante [Cobra](https://github.com/spf13/cobra).
 
-- [`NewOAuth2Command`](oauth2.go): crea un comando raíz `oauth2` que agrupa los subcomandos de un proveedor. Requiere que se proporcionen los comandos obligatorios `get-token` y `get-url`.
+- [`NewOAuth2Command`](oauth2.go): crea el comando raíz `oauth2` para un proveedor, agrupando `get-token` y `get-url`. Se usa directamente como root del binario (`Execute()`). Requiere que se proporcionen los comandos obligatorios `get-token` y `get-url`.
 
 Ejemplo de implementación completa para un provider:
 
@@ -243,7 +243,8 @@ func main() {
         },
     }
 
-    // Crear comando raíz OAuth2 para el provider
+    // NewOAuth2Command retorna el root command del binario
+    // Invocación: ./grant-github get-token  o  ./grant-github get-url
     rootCmd, err := grantprovider.NewOAuth2Command("github", grantprovider.OAuth2Commands{
         "get-token": tokenCmd,
         "get-url":   urlCmd,
@@ -253,7 +254,6 @@ func main() {
         os.Exit(1)
     }
 
-    // Ejecutar
     if err := rootCmd.Execute(); err != nil {
         fmt.Fprintf(os.Stderr, "Error: %v\n", err)
         os.Exit(1)
@@ -385,6 +385,8 @@ func main() {
         "get-url":   buildCmd(handler, "get-url"),
     }
 
+    // NewOAuth2Command retorna el root command del binario
+    // Invocación: ./grant-github get-token  o  ./grant-github get-url
     rootCmd, err := grantprovider.NewOAuth2Command("github", commands)
     if err != nil {
         fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -412,6 +414,19 @@ func buildCmd(handler *github.Handler, commandName string) *cobra.Command {
 ```
 
 Si falta algún comando requerido, `NewOAuth2Command` retorna error indicando cuáles faltan.
+
+> **Cómo Cobra resuelve los comandos:** En Cobra, el campo `Use` del root command es solo texto para el `--help`; la ruta de invocación real siempre parte del **nombre del binario** (`os.Args[0]`). Por eso, aunque el root tenga `Use: "oauth2"`, los subcomandos se invocan directamente después del binario, **sin** repetir `oauth2`:
+>
+> ```bash
+> # Correcto: ./binario subcomando
+> echo '{...}' | ./grant-github get-url
+> echo '{...}' | ./grant-github get-token
+>
+> # Incorrecto: ./binario root subcomando — produce "unknown command 'oauth2' for 'oauth2'"
+> echo '{...}' | ./grant-github oauth2 get-url
+> ```
+>
+> Si necesitas el prefijo `oauth2` en la invocación (`./grant-github oauth2 get-url`), crea un root command propio y agrega el resultado de `NewOAuth2Command` con `rootCmd.AddCommand(oauth2Cmd)`.
 
 ### Validación de argumentos OAuth2
 
