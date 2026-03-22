@@ -9,28 +9,27 @@ import (
 
 // mockOAuth2Handler implementa OAuth2CommandHandler para tests.
 type mockOAuth2Handler struct {
-	resp            InvokeResponse
-	err             error
-	exchangeFetcher ExchangeFetcher
+	resp                     InvokeResponse
+	err                      error
+	clientCredentialsService GetClientCredentialsService
 }
 
 func (m *mockOAuth2Handler) Invoke(input InvokeCommand) (InvokeResponse, error) {
 	return m.resp, m.err
 }
 
-func (m *mockOAuth2Handler) GetExchangeFetcher() ExchangeFetcher {
-	return m.exchangeFetcher
+func (m *mockOAuth2Handler) GetCredentialsService() GetClientCredentialsService {
+	return m.clientCredentialsService
 }
 
-func (m *mockOAuth2Handler) SetExchangeFetcher(f ExchangeFetcher) {
-	m.exchangeFetcher = f
+func (m *mockOAuth2Handler) SetCredentialsService(f GetClientCredentialsService) {
+	m.clientCredentialsService = f
 }
 
-// mockExchangeFetcherForInvoker es un ExchangeFetcher de uso en los tests del invoker.
-type mockExchangeFetcherForInvoker struct{}
-
-func (m *mockExchangeFetcherForInvoker) Execute(_ ExchangeRequest) (ExchangeReponse, error) {
-	return ExchangeReponse{}, nil
+// newMockCredentialsService crea un GetClientCredentialsService con un mockExchangeFetcher,
+// listo para usar en tests de OAuth2CommandInvoker sin servidor HTTP.
+func newMockCredentialsService() GetClientCredentialsService {
+	return GetClientCredentialsService{ExchangeFetcher: &mockExchangeFetcher{}}
 }
 
 func TestNewOAuth2Command_Success(t *testing.T) {
@@ -260,15 +259,14 @@ func TestValidateOAuth2GetToken_EmptyArguments(t *testing.T) {
 const validOAuth2JSON = `{"command":"get-token","provider":"github","session_id":"sess-1","ott":"my-ott","exchange_endpoint":"http://exchange.example.com"}`
 
 func TestOAuth2CommandInvoker_Run_Success(t *testing.T) {
-	var receivedFetcher ExchangeFetcher
+	var factoryCalled bool
 	handler := &mockOAuth2Handler{
 		resp: InvokeResponse{Result: Result{Success: true, Message: "ok"}},
 	}
 
-	factory := func(cmd InvokeCommand) ExchangeFetcher {
-		f := &mockExchangeFetcherForInvoker{}
-		receivedFetcher = f
-		return f
+	factory := func(cmd InvokeCommand) GetClientCredentialsService {
+		factoryCalled = true
+		return newMockCredentialsService()
 	}
 
 	invoker := NewOAuth2CommandInvoker(handler, factory)
@@ -283,19 +281,19 @@ func TestOAuth2CommandInvoker_Run_Success(t *testing.T) {
 	if resp.Message != "ok" {
 		t.Errorf("mensaje inesperado: %q", resp.Message)
 	}
-	// Verificar que el factory fue llamado y el fetcher fue inyectado en el handler
-	if receivedFetcher == nil {
+	if !factoryCalled {
 		t.Error("esperaba que la factory fuera llamada")
 	}
-	if handler.exchangeFetcher != receivedFetcher {
-		t.Error("esperaba que SetExchangeFetcher fuera llamado con el fetcher de la factory")
+	// Verificar que SetCredentialsService fue llamado: el ExchangeFetcher interno debe ser no nil
+	if handler.clientCredentialsService.ExchangeFetcher == nil {
+		t.Error("esperaba que SetCredentialsService fuera llamado con el servicio de la factory")
 	}
 }
 
 func TestOAuth2CommandInvoker_Run_InvalidJSON(t *testing.T) {
 	handler := &mockOAuth2Handler{}
-	invoker := NewOAuth2CommandInvoker(handler, func(_ InvokeCommand) ExchangeFetcher {
-		return &mockExchangeFetcherForInvoker{}
+	invoker := NewOAuth2CommandInvoker(handler, func(_ InvokeCommand) GetClientCredentialsService {
+		return newMockCredentialsService()
 	})
 
 	_, err := invoker.Run(strings.NewReader(`{invalid json}`))
@@ -311,9 +309,9 @@ func TestOAuth2CommandInvoker_Run_FactoryReceivesCommand(t *testing.T) {
 		resp: InvokeResponse{Result: Result{Success: true}},
 	}
 
-	factory := func(cmd InvokeCommand) ExchangeFetcher {
+	factory := func(cmd InvokeCommand) GetClientCredentialsService {
 		capturedCommand = cmd
-		return &mockExchangeFetcherForInvoker{}
+		return newMockCredentialsService()
 	}
 
 	invoker := NewOAuth2CommandInvoker(handler, factory)
@@ -342,7 +340,7 @@ func TestOAuth2CommandInvoker_Run_HandlerNotOAuth2(t *testing.T) {
 	plain := &mockHandler{resp: InvokeResponse{Result: Result{Success: true}}}
 	invoker := &OAuth2CommandInvoker{
 		CommandInvoker:         *NewCommandInvoker(plain),
-		ExchangeFetcherFactory: func(_ InvokeCommand) ExchangeFetcher { return nil },
+		ExchangeFetcherFactory: func(_ InvokeCommand) GetClientCredentialsService { return GetClientCredentialsService{} },
 	}
 
 	_, err := invoker.Run(strings.NewReader(validOAuth2JSON))
@@ -354,5 +352,3 @@ func TestOAuth2CommandInvoker_Run_HandlerNotOAuth2(t *testing.T) {
 		t.Errorf("mensaje de error inesperado: %v", err)
 	}
 }
-
-

@@ -42,27 +42,29 @@ func NewOAuth2Command(provider string, oauth2Commands OAuth2Commands) (*cobra.Co
 	return oauth2RootCommand, nil
 }
 
-// OAuth2CommandHandler extiende CommandHandler con la capacidad de construir el ExchangeFetcher
-// necesario para obtener credenciales del cliente durante la ejecución de un comando OAuth2.
-// Los providers deben implementar esta interfaz para integrarse con GetClientCredentialsService.
+// OAuth2CommandHandler extiende CommandHandler para flujos OAuth2.
+// Los providers deben implementar esta interfaz: además de Invoke, deben exponer
+// GetCredentialsService y SetCredentialsService para que OAuth2CommandInvoker
+// inyecte el GetClientCredentialsService configurado con el OTT y el endpoint
+// de exchange recibidos en cada InvokeCommand.
 type OAuth2CommandHandler interface {
 	CommandHandler
-	// GetExchengeFetcher construye el ExchangeFetcher que será usado por GetClientCredentialsService
-	// para intercambiar el OTT por credenciales en el endpoint de exchange.
-	GetExchangeFetcher() ExchangeFetcher
-	SetExchangeFetcher(ExchangeFetcher)
+	// GetCredentialsService retorna el GetClientCredentialsService inyectado por OAuth2CommandInvoker.
+	GetCredentialsService() GetClientCredentialsService
+	// SetCredentialsService recibe el GetClientCredentialsService construido por ExchangeFetcherFactory.
+	// Es llamado automáticamente por OAuth2CommandInvoker antes de invocar Invoke.
+	SetCredentialsService(GetClientCredentialsService)
 }
 
 // OAuth2CommandInvoker extiende CommandInvoker para flujos OAuth2.
-// Antes de delegar en CommandInvoker, decodifica el InvokeCommand del stdin,
-// construye el ExchangeFetcher con ExchangeFetcherFactory e inyecta el fetcher
-// en el handler vía SetExchangeFetcher, de modo que el handler tenga las
-// credenciales disponibles cuando su método Invoke sea invocado.
+// Su Run decodifica el InvokeCommand del stdin, usa ExchangeFetcherFactory para
+// construir el GetClientCredentialsService apropiado e inyectarlo en el handler
+// vía SetCredentialsService, dejándolo listo para obtener credenciales cuando
+// su método Invoke sea llamado.
 type OAuth2CommandInvoker struct {
 	CommandInvoker
-	// ExchangeFetcherFactory construye el ExchangeFetcher adecuado para cada InvokeCommand.
-	// Recibe el comando ya decodificado y devuelve la implementación de ExchangeFetcher
-	// (típicamente *ExchangeFetcherService configurado con provider, sessionID y endpoint).
+	// ExchangeFetcherFactory construye el GetClientCredentialsService adecuado para
+	// cada InvokeCommand, configurado con el provider, sessionID y exchangeEndpoint del comando.
 	ExchangeFetcherFactory ExchangeFetcherFactory
 }
 
@@ -77,8 +79,9 @@ func NewOAuth2CommandInvoker(handler OAuth2CommandHandler, factory ExchangeFetch
 	}
 }
 
-// Run decodifica el InvokeCommand desde stdin, inyecta el ExchangeFetcher en el
-// handler y delega el resto del flujo (validación e Invoke) en CommandInvoker.Run.
+// Run decodifica el InvokeCommand desde stdin, construye el GetClientCredentialsService
+// con ExchangeFetcherFactory, lo inyecta en el handler vía SetCredentialsService y
+// delega el resto del flujo (validación e Invoke) en CommandInvoker.Run.
 // Retorna error si el handler no implementa OAuth2CommandHandler, el JSON es
 // inválido o la serialización interna falla.
 func (ci *OAuth2CommandInvoker) Run(stdin io.Reader) (InvokeResponse, error) {
@@ -91,7 +94,7 @@ func (ci *OAuth2CommandInvoker) Run(stdin io.Reader) (InvokeResponse, error) {
 	if !ok {
 		return InvokeResponse{}, fmt.Errorf("el handler no implementa OAuth2CommandHandler")
 	}
-	handler.SetExchangeFetcher(ci.ExchangeFetcherFactory(command))
+	handler.SetCredentialsService(ci.ExchangeFetcherFactory(command))
 
 	// Re-serializar el comando para que CommandInvoker.Run pueda leerlo desde un io.Reader.
 	writer := new(bytes.Buffer)
