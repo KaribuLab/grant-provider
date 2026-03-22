@@ -20,8 +20,9 @@ go get github.com/KaribuLab/grant-provider
 | [`InvokeResponse`](invoke.go) | Salida: `result` embebido, `data` opcional (`any`) y `additional_data` opcional. |
 | [`CommandHandler`](command.go) | Tu implementación: recibe `InvokeCommand` y devuelve `InvokeResponse`. |
 | [`CommandInvoker`](command.go) | Lee JSON desde un `io.Reader` (p. ej. `stdin`), valida y delega en el handler. |
+| [`OAuth2CommandInvoker`](oauth2.go) | Extiende `CommandInvoker`: inyecta el `ExchangeFetcher` en el handler antes de delegar. Usar con `NewOAuth2CommandInvoker`. |
 | [`NewOAuth2Command`](oauth2.go) | Crea el comando raíz `oauth2` con subcomandos `get-token` y `get-url`. Úsalo directamente como root del binario. |
-| [`OAuth2CommandHandler`](oauth2.go) | Extiende `CommandHandler` con `GetExecutorFetcher` para que el provider construya el `ExchangeFetcher`. |
+| [`OAuth2CommandHandler`](oauth2.go) | Extiende `CommandHandler` con `GetExchangeFetcher`/`SetExchangeFetcher`. Los providers deben implementar esta interfaz. |
 | [`ValidateOAuth2GetURL`](oauth2.go) | Valida argumentos requeridos para generar URL de autorización. |
 | [`ValidateOAuth2GetToken`](oauth2.go) | Valida argumentos requeridos para obtener token de acceso. |
 | [`GetClientCredentialsService`](oauth2.go) | Obtiene `ClientCredentialsData` delegando en un `ExchangeFetcher` inyectado. Testeable sin HTTP. |
@@ -225,39 +226,34 @@ func (h *GitHubHandler) handleGetURL(arguments []grantprovider.CommandArgument) 
     }, nil
 }
 
-func main() {
-    // Crear comando get-token: lee JSON desde stdin, delega al handler
-    tokenCmd := &cobra.Command{
-        Use:   "get-token",
-        Short: "Obtiene un token de acceso",
-        RunE: func(cmd *cobra.Command, args []string) error {
-            handler := &GitHubHandler{}
-            invoker := grantprovider.NewCommandInvoker(handler)
-            response, err := invoker.Run(os.Stdin)
-            if err != nil {
-                // Si hay error de validación, response ya contiene los detalles
-                _ = grantprovider.ToJSON(response, os.Stdout)
-                return err
-            }
-            return grantprovider.ToJSON(response, os.Stdout)
-        },
+// exchangeFactory construye el ExchangeFetcherService a partir del InvokeCommand decodificado.
+// Se pasa a NewOAuth2CommandInvoker para que cada invocación tenga el fetcher correcto.
+func exchangeFactory(cmd grantprovider.InvokeCommand) grantprovider.ExchangeFetcher {
+    return &grantprovider.ExchangeFetcherService{
+        Provider:         cmd.Provider,
+        SessionID:        cmd.SessionID,
+        ExchangeEndpoint: cmd.ExchangeEndpoint,
     }
+}
 
-    // Crear comando get-url: lee JSON desde stdin, delega al handler
-    urlCmd := &cobra.Command{
-        Use:   "get-url",
-        Short: "Genera URL de autorización",
+func buildCmd(handler *GitHubHandler, use, short string) *cobra.Command {
+    return &cobra.Command{
+        Use:   use,
+        Short: short,
         RunE: func(cmd *cobra.Command, args []string) error {
-            handler := &GitHubHandler{}
-            invoker := grantprovider.NewCommandInvoker(handler)
+            // OAuth2CommandInvoker inyecta el ExchangeFetcher en el handler antes de Invoke
+            invoker := grantprovider.NewOAuth2CommandInvoker(handler, exchangeFactory)
             response, err := invoker.Run(os.Stdin)
-            if err != nil {
-                _ = grantprovider.ToJSON(response, os.Stdout)
-                return err
-            }
-            return grantprovider.ToJSON(response, os.Stdout)
+            _ = grantprovider.ToJSON(response, os.Stdout)
+            return err
         },
     }
+}
+
+func main() {
+    handler := &GitHubHandler{}
+    tokenCmd := buildCmd(handler, "get-token", "Obtiene un token de acceso")
+    urlCmd   := buildCmd(handler, "get-url",   "Genera URL de autorización")
 
     // NewOAuth2Command retorna el root command del binario
     // Invocación: ./grant-github get-token  o  ./grant-github get-url
@@ -435,7 +431,14 @@ func buildCmd(handler *github.Handler, commandName string) *cobra.Command {
         Use:   commandName,
         Short: fmt.Sprintf("OAuth2 %s para GitHub", commandName),
         RunE: func(cmd *cobra.Command, args []string) error {
-            invoker := grantprovider.NewCommandInvoker(handler)
+            factory := func(c grantprovider.InvokeCommand) grantprovider.ExchangeFetcher {
+                return &grantprovider.ExchangeFetcherService{
+                    Provider:         c.Provider,
+                    SessionID:        c.SessionID,
+                    ExchangeEndpoint: c.ExchangeEndpoint,
+                }
+            }
+            invoker := grantprovider.NewOAuth2CommandInvoker(handler, factory)
             response, err := invoker.Run(os.Stdin)
             _ = grantprovider.ToJSON(response, os.Stdout)
             return err
@@ -445,6 +448,41 @@ func buildCmd(handler *github.Handler, commandName string) *cobra.Command {
 ```
 
 Si falta algún comando requerido, `NewOAuth2Command` retorna error indicando cuáles faltan.
+
+### OAuth2CommandInvoker
+
+[`OAuth2CommandInvoker`](oauth2.go) extiende [`CommandInvoker`](command.go) para el flujo OAuth2. Su `Run` realiza tres pasos adicionales antes de delegar en `CommandInvoker`:
+
+1. Decodifica el `InvokeCommand` del stdin para obtener `provider`, `session_id`, `ott` y `exchange_endpoint`.
+2. Llama a `ExchangeFetcherFactory(command)` para construir el `ExchangeFetcher` configurado con esos valores.
+3. Inyecta el fetcher en el handler vía `SetExchangeFetcher`, dejándolo listo para que `Invoke` obtenga credenciales.
+
+Usar siempre `NewOAuth2CommandInvoker` (no la struct directamente) para garantizar en tiempo de construcción que el handler implementa `OAuth2CommandHandler`:
+
+```go
+invoker := grantprovider.NewOAuth2CommandInvoker(handler, factory)
+response, err := invoker.Run(os.Stdin)
+```
+
+El handler debe implementar `OAuth2CommandHandler`:
+
+```go
+type MyHandler struct {
+    fetcher grantprovider.ExchangeFetcher
+}
+
+func (h *MyHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
+    svc := &grantprovider.GetClientCredentialsService{ExchangeFetcher: h.fetcher}
+    creds, err := svc.Execute(grantprovider.ExchangeRequest{
+        Operation: grantprovider.OperationGetClientCredentials,
+        OTT:       input.OTT,
+    })
+    // ... usar creds.ClientID y creds.ClientSecret ...
+}
+
+func (h *MyHandler) GetExchangeFetcher() grantprovider.ExchangeFetcher { return h.fetcher }
+func (h *MyHandler) SetExchangeFetcher(f grantprovider.ExchangeFetcher) { h.fetcher = f }
+```
 
 > **Cómo Cobra resuelve los comandos:** En Cobra, el campo `Use` del root command es solo texto para el `--help`; la ruta de invocación real siempre parte del **nombre del binario** (`os.Args[0]`). Por eso, aunque el root tenga `Use: "oauth2"`, los subcomandos se invocan directamente después del binario, **sin** repetir `oauth2`:
 >

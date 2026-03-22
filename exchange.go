@@ -31,6 +31,12 @@ type ExchangeReponse struct {
 	Message string `json:"message" validate:"required"`
 }
 
+// ExchangeFetcherFactory es el tipo de función que construye un ExchangeFetcher
+// a partir de un InvokeCommand ya decodificado.
+// Se pasa a NewOAuth2CommandInvoker para que cada invocación cree el fetcher
+// configurado con el provider, sessionID y exchangeEndpoint del comando.
+type ExchangeFetcherFactory = func(InvokeCommand) ExchangeFetcher
+
 // ExchangeFetcher define el contrato para ejecutar un intercambio con el endpoint de exchange.
 // Implementar esta interfaz permite sustituir ExchangeFetcherService por un mock en tests.
 type ExchangeFetcher interface {

@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+// ========== Mocks para OAuth2CommandInvoker ==========
+
+// mockOAuth2Handler implementa OAuth2CommandHandler para tests.
+type mockOAuth2Handler struct {
+	resp            InvokeResponse
+	err             error
+	exchangeFetcher ExchangeFetcher
+}
+
+func (m *mockOAuth2Handler) Invoke(input InvokeCommand) (InvokeResponse, error) {
+	return m.resp, m.err
+}
+
+func (m *mockOAuth2Handler) GetExchangeFetcher() ExchangeFetcher {
+	return m.exchangeFetcher
+}
+
+func (m *mockOAuth2Handler) SetExchangeFetcher(f ExchangeFetcher) {
+	m.exchangeFetcher = f
+}
+
+// mockExchangeFetcherForInvoker es un ExchangeFetcher de uso en los tests del invoker.
+type mockExchangeFetcherForInvoker struct{}
+
+func (m *mockExchangeFetcherForInvoker) Execute(_ ExchangeRequest) (ExchangeReponse, error) {
+	return ExchangeReponse{}, nil
+}
+
 func TestNewOAuth2Command_Success(t *testing.T) {
 	provider := "github"
 	commands := OAuth2Commands{
@@ -224,6 +252,106 @@ func TestValidateOAuth2GetToken_EmptyArguments(t *testing.T) {
 	}
 	if validationErr.Violations[0].Field != "code" {
 		t.Fatalf("se esperaba violación en campo 'code', se obtuvo: %s", validationErr.Violations[0].Field)
+	}
+}
+
+// ========== Pruebas para OAuth2CommandInvoker ==========
+
+const validOAuth2JSON = `{"command":"get-token","provider":"github","session_id":"sess-1","ott":"my-ott","exchange_endpoint":"http://exchange.example.com"}`
+
+func TestOAuth2CommandInvoker_Run_Success(t *testing.T) {
+	var receivedFetcher ExchangeFetcher
+	handler := &mockOAuth2Handler{
+		resp: InvokeResponse{Result: Result{Success: true, Message: "ok"}},
+	}
+
+	factory := func(cmd InvokeCommand) ExchangeFetcher {
+		f := &mockExchangeFetcherForInvoker{}
+		receivedFetcher = f
+		return f
+	}
+
+	invoker := NewOAuth2CommandInvoker(handler, factory)
+	resp, err := invoker.Run(strings.NewReader(validOAuth2JSON))
+
+	if err != nil {
+		t.Fatalf("esperaba nil error, obtuve: %v", err)
+	}
+	if !resp.Success {
+		t.Errorf("esperaba Success true, obtuve false")
+	}
+	if resp.Message != "ok" {
+		t.Errorf("mensaje inesperado: %q", resp.Message)
+	}
+	// Verificar que el factory fue llamado y el fetcher fue inyectado en el handler
+	if receivedFetcher == nil {
+		t.Error("esperaba que la factory fuera llamada")
+	}
+	if handler.exchangeFetcher != receivedFetcher {
+		t.Error("esperaba que SetExchangeFetcher fuera llamado con el fetcher de la factory")
+	}
+}
+
+func TestOAuth2CommandInvoker_Run_InvalidJSON(t *testing.T) {
+	handler := &mockOAuth2Handler{}
+	invoker := NewOAuth2CommandInvoker(handler, func(_ InvokeCommand) ExchangeFetcher {
+		return &mockExchangeFetcherForInvoker{}
+	})
+
+	_, err := invoker.Run(strings.NewReader(`{invalid json}`))
+
+	if err == nil {
+		t.Fatal("esperaba error por JSON inválido, obtuve nil")
+	}
+}
+
+func TestOAuth2CommandInvoker_Run_FactoryReceivesCommand(t *testing.T) {
+	var capturedCommand InvokeCommand
+	handler := &mockOAuth2Handler{
+		resp: InvokeResponse{Result: Result{Success: true}},
+	}
+
+	factory := func(cmd InvokeCommand) ExchangeFetcher {
+		capturedCommand = cmd
+		return &mockExchangeFetcherForInvoker{}
+	}
+
+	invoker := NewOAuth2CommandInvoker(handler, factory)
+	_, err := invoker.Run(strings.NewReader(validOAuth2JSON))
+
+	if err != nil {
+		t.Fatalf("esperaba nil error, obtuve: %v", err)
+	}
+	if capturedCommand.Provider != "github" {
+		t.Errorf("provider inesperado en la factory: %q", capturedCommand.Provider)
+	}
+	if capturedCommand.SessionID != "sess-1" {
+		t.Errorf("session_id inesperado en la factory: %q", capturedCommand.SessionID)
+	}
+	if capturedCommand.OTT != "my-ott" {
+		t.Errorf("ott inesperado en la factory: %q", capturedCommand.OTT)
+	}
+	if capturedCommand.ExchangeEndpoint != "http://exchange.example.com" {
+		t.Errorf("exchange_endpoint inesperado en la factory: %q", capturedCommand.ExchangeEndpoint)
+	}
+}
+
+func TestOAuth2CommandInvoker_Run_HandlerNotOAuth2(t *testing.T) {
+	// Crear un invoker con un handler que NO implementa OAuth2CommandHandler
+	// forzando la inserción directa (sin usar el constructor seguro).
+	plain := &mockHandler{resp: InvokeResponse{Result: Result{Success: true}}}
+	invoker := &OAuth2CommandInvoker{
+		CommandInvoker:         *NewCommandInvoker(plain),
+		ExchangeFetcherFactory: func(_ InvokeCommand) ExchangeFetcher { return nil },
+	}
+
+	_, err := invoker.Run(strings.NewReader(validOAuth2JSON))
+
+	if err == nil {
+		t.Fatal("esperaba error por handler incompatible, obtuve nil")
+	}
+	if !strings.Contains(err.Error(), "OAuth2CommandHandler") {
+		t.Errorf("mensaje de error inesperado: %v", err)
 	}
 }
 

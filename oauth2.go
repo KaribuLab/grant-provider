@@ -3,6 +3,7 @@ package grantprovider
 import (
 	"bytes"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 )
@@ -46,9 +47,58 @@ func NewOAuth2Command(provider string, oauth2Commands OAuth2Commands) (*cobra.Co
 // Los providers deben implementar esta interfaz para integrarse con GetClientCredentialsService.
 type OAuth2CommandHandler interface {
 	CommandHandler
-	// GetExecutorFetcher construye el ExchangeFetcher que será usado por GetClientCredentialsService
+	// GetExchengeFetcher construye el ExchangeFetcher que será usado por GetClientCredentialsService
 	// para intercambiar el OTT por credenciales en el endpoint de exchange.
-	GetExecutorFetcher(provider string, sessionID string, exchangeEndpoint string) ExchangeFetcher
+	GetExchangeFetcher() ExchangeFetcher
+	SetExchangeFetcher(ExchangeFetcher)
+}
+
+// OAuth2CommandInvoker extiende CommandInvoker para flujos OAuth2.
+// Antes de delegar en CommandInvoker, decodifica el InvokeCommand del stdin,
+// construye el ExchangeFetcher con ExchangeFetcherFactory e inyecta el fetcher
+// en el handler vía SetExchangeFetcher, de modo que el handler tenga las
+// credenciales disponibles cuando su método Invoke sea invocado.
+type OAuth2CommandInvoker struct {
+	CommandInvoker
+	// ExchangeFetcherFactory construye el ExchangeFetcher adecuado para cada InvokeCommand.
+	// Recibe el comando ya decodificado y devuelve la implementación de ExchangeFetcher
+	// (típicamente *ExchangeFetcherService configurado con provider, sessionID y endpoint).
+	ExchangeFetcherFactory ExchangeFetcherFactory
+}
+
+// NewOAuth2CommandInvoker crea un OAuth2CommandInvoker garantizando en tiempo de
+// construcción que el handler implementa OAuth2CommandHandler.
+// Usar esta función en lugar de inicializar la estructura directamente evita el
+// pánico que produciría un handler incompatible en tiempo de ejecución.
+func NewOAuth2CommandInvoker(handler OAuth2CommandHandler, factory ExchangeFetcherFactory) *OAuth2CommandInvoker {
+	return &OAuth2CommandInvoker{
+		CommandInvoker:         *NewCommandInvoker(handler),
+		ExchangeFetcherFactory: factory,
+	}
+}
+
+// Run decodifica el InvokeCommand desde stdin, inyecta el ExchangeFetcher en el
+// handler y delega el resto del flujo (validación e Invoke) en CommandInvoker.Run.
+// Retorna error si el handler no implementa OAuth2CommandHandler, el JSON es
+// inválido o la serialización interna falla.
+func (ci *OAuth2CommandInvoker) Run(stdin io.Reader) (InvokeResponse, error) {
+	command, err := FromJSON[InvokeCommand](stdin)
+	if err != nil {
+		return InvokeResponse{}, err
+	}
+
+	handler, ok := ci.CommandInvoker.handler.(OAuth2CommandHandler)
+	if !ok {
+		return InvokeResponse{}, fmt.Errorf("el handler no implementa OAuth2CommandHandler")
+	}
+	handler.SetExchangeFetcher(ci.ExchangeFetcherFactory(command))
+
+	// Re-serializar el comando para que CommandInvoker.Run pueda leerlo desde un io.Reader.
+	writer := new(bytes.Buffer)
+	if err = ToJSON(writer, command); err != nil {
+		return InvokeResponse{}, err
+	}
+	return ci.CommandInvoker.Run(writer)
 }
 
 // requiredGetURLParams define los parámetros obligatorios para get-url.
