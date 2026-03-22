@@ -15,10 +15,12 @@ type CommandArgument struct {
 
 // InvokeCommand es el cuerpo de entrada decodificado desde JSON para un comando.
 type InvokeCommand struct {
-	Arguments *[]CommandArgument `json:"arguments,omitempty" validate:"omitempty"`
-	Command   string             `json:"command" validate:"required"`
-	Provider  string             `json:"provider" validate:"required"`
-	SessionID string             `json:"session_id" validate:"required"`
+	Arguments        *[]CommandArgument `json:"arguments,omitempty" validate:"omitempty"`
+	OTT              string             `json:"ott" validate:"required"`
+	ExchangeEndpoint string             `json:"exchange_endpoint" validate:"required"`
+	Command          string             `json:"command" validate:"required"`
+	Provider         string             `json:"provider" validate:"required"`
+	SessionID        string             `json:"session_id" validate:"required"`
 }
 
 // InvokeResponse representa la salida de un comando. Data admite cualquier forma

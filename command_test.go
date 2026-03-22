@@ -21,9 +21,11 @@ func (m *mockHandler) Invoke(input InvokeCommand) (InvokeResponse, error) {
 	return m.resp, m.err
 }
 
+// validInvokeJSON es el JSON mínimo válido para InvokeCommand.
+const validInvokeJSON = `{"command":"test","provider":"mock","session_id":"123","ott":"test-ott-token","exchange_endpoint":"http://exchange.example.com"}`
+
 func TestCommandInvokerRun(t *testing.T) {
 	t.Run("flujo exitoso", func(t *testing.T) {
-		jsonInput := `{"command":"test","provider":"mock","session_id":"123"}`
 		handler := &mockHandler{
 			resp: InvokeResponse{
 				Result: Result{Success: true, Message: "ok"},
@@ -31,7 +33,7 @@ func TestCommandInvokerRun(t *testing.T) {
 		}
 		invoker := NewCommandInvoker(handler)
 
-		resp, err := invoker.Run(strings.NewReader(jsonInput))
+		resp, err := invoker.Run(strings.NewReader(validInvokeJSON))
 
 		if err != nil {
 			t.Fatalf("esperaba nil error, obtuve: %v", err)
@@ -60,7 +62,7 @@ func TestCommandInvokerRun(t *testing.T) {
 	})
 
 	t.Run("campo requerido faltante", func(t *testing.T) {
-		// Falta el campo "command" que es required
+		// Faltan los campos "command", "ott" y "exchange_endpoint" que son required
 		jsonInput := `{"provider":"mock","session_id":"123"}`
 		handler := &mockHandler{}
 		invoker := NewCommandInvoker(handler)
@@ -111,13 +113,12 @@ func TestCommandInvokerRun(t *testing.T) {
 	})
 
 	t.Run("error del handler", func(t *testing.T) {
-		jsonInput := `{"command":"test","provider":"mock","session_id":"123"}`
 		handler := &mockHandler{
 			err: errors.New("error simulado del handler"),
 		}
 		invoker := NewCommandInvoker(handler)
 
-		resp, err := invoker.Run(strings.NewReader(jsonInput))
+		resp, err := invoker.Run(strings.NewReader(validInvokeJSON))
 
 		if err == nil {
 			t.Fatal("esperaba error del handler, obtuve nil")
@@ -131,7 +132,6 @@ func TestCommandInvokerRun(t *testing.T) {
 	})
 
 	t.Run("respuesta con Data", func(t *testing.T) {
-		jsonInput := `{"command":"test","provider":"mock","session_id":"123"}`
 		data := &testData{Token: "abc123"}
 		handler := &mockHandler{
 			resp: InvokeResponse{
@@ -141,7 +141,7 @@ func TestCommandInvokerRun(t *testing.T) {
 		}
 		invoker := NewCommandInvoker(handler)
 
-		resp, err := invoker.Run(strings.NewReader(jsonInput))
+		resp, err := invoker.Run(strings.NewReader(validInvokeJSON))
 
 		if err != nil {
 			t.Fatalf("esperaba nil error, obtuve: %v", err)

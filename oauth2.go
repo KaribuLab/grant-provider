@@ -1,6 +1,7 @@
 package grantprovider
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -114,4 +115,31 @@ func ValidateOAuth2GetToken(arguments []CommandArgument) (ValidationError, error
 	}
 
 	return ValidationError{}, nil
+}
+
+type ClientCredentialsData struct {
+	ClientID     string `json:"client_id" validate:"required"`
+	ClientSecret string `json:"client_secret" validate:"rquired"`
+}
+
+func GetClientCredentials(provider string, sessionID string, exchangeEndpoint string, exchangeRequest ExchangeRequest) (ClientCredentialsData, error) {
+	exchangeService := ExchangeService{
+		Provider:         provider,
+		SessionID:        sessionID,
+		ExchangeEndpoint: exchangeEndpoint,
+	}
+	exchangeResponse, err := exchangeService.Execute(exchangeRequest)
+	if err != nil {
+		return ClientCredentialsData{}, err
+	}
+	data := new(bytes.Buffer)
+	err = ToJSON(data, exchangeResponse.Data)
+	if err != nil {
+		return ClientCredentialsData{}, err
+	}
+	clientCredentials, err := FromJSON[ClientCredentialsData](data)
+	if err != nil {
+		return ClientCredentialsData{}, err
+	}
+	return clientCredentials, nil
 }

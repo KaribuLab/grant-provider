@@ -16,13 +16,18 @@ go get github.com/KaribuLab/grant-provider
 
 | Pieza | Rol |
 |--------|-----|
-| [`InvokeCommand`](invoke.go) | Entrada: comando, proveedor, sesión y argumentos opcionales. |
+| [`InvokeCommand`](invoke.go) | Entrada: comando, proveedor, sesión, OTT, endpoint de exchange y argumentos opcionales. |
 | [`InvokeResponse`](invoke.go) | Salida: `result` embebido, `data` opcional (`any`) y `additional_data` opcional. |
 | [`CommandHandler`](command.go) | Tu implementación: recibe `InvokeCommand` y devuelve `InvokeResponse`. |
 | [`CommandInvoker`](command.go) | Lee JSON desde un `io.Reader` (p. ej. `stdin`), valida y delega en el handler. |
 | [`NewOAuth2Command`](oauth2.go) | Crea el comando raíz `oauth2` con subcomandos `get-token` y `get-url`. Úsalo directamente como root del binario. |
 | [`ValidateOAuth2GetURL`](oauth2.go) | Valida argumentos requeridos para generar URL de autorización. |
 | [`ValidateOAuth2GetToken`](oauth2.go) | Valida argumentos requeridos para obtener token de acceso. |
+| [`GetClientCredentials`](oauth2.go) | Retorna `ClientCredentialsData` con `client_id` y `client_secret` obtenidos del endpoint de exchange usando el OTT. |
+| [`ExchangeService`](exchange.go) | Realiza el HTTP POST al endpoint de exchange para intercambiar un OTT por datos. |
+| [`ExchangeRequest`](exchange.go) | Cuerpo del request al exchange: `operation` y `ott`. |
+| [`ExchangeReponse`](exchange.go) | Respuesta del exchange: `data` (`any`) y `message`. |
+| [`ClientCredentialsData`](oauth2.go) | Estructura con `client_id` y `client_secret` retornados directamente por `GetClientCredentials`. |
 
 ## Uso rápido: invocador por stdin
 
@@ -37,12 +42,8 @@ Ejemplo mínimo de handler:
 type MiHandler struct{}
 
 func (MiHandler) Invoke(cmd grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
-    // Ejemplo: devolver datos concretos en Data (cualquier tipo vía any)
     return grantprovider.InvokeResponse{
         Result: grantprovider.Result{Success: true, Message: "ok"},
-        Data: &grantprovider.GetAccessTokenData{
-            AccessToken: "…", RefreshToken: "…", ExpiresIn: 3600,
-        },
     }, nil
 }
 ```
@@ -54,11 +55,13 @@ Entrada JSON esperada por `Run` (campos alineados con etiquetas `json` de [`Invo
   "command": "nombre-del-comando",
   "provider": "proveedor",
   "session_id": "id-de-sesion",
+  "ott": "one-time-token",
+  "exchange_endpoint": "https://exchange.example.com/api/exchange",
   "arguments": [{ "name": "clave", "value": "valor" }]
 }
 ```
 
-`arguments` es opcional. El decodificador usa [`DisallowUnknownFields`](https://pkg.go.dev/encoding/json#Decoder.DisallowUnknownFields): campos JSON desconocidos provocan error.
+Campos requeridos: `command`, `provider`, `session_id`, `ott`, `exchange_endpoint`. El campo `arguments` es opcional. El decodificador usa [`DisallowUnknownFields`](https://pkg.go.dev/encoding/json#Decoder.DisallowUnknownFields): campos JSON desconocidos provocan error.
 
 ## Validación
 
@@ -123,6 +126,21 @@ type GitHubHandler struct{}
 
 // Invoke recibe el InvokeCommand ya decodificado desde stdin.
 func (h *GitHubHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
+    // Obtener credenciales usando el OTT y el endpoint de exchange recibidos en el comando
+    creds, err := grantprovider.GetClientCredentials(
+        input.Provider,
+        input.SessionID,
+        input.ExchangeEndpoint,
+        grantprovider.ExchangeRequest{
+            Operation: grantprovider.OperationGetClientCredentials,
+            OTT:       input.OTT,
+        },
+    )
+    if err != nil {
+        return grantprovider.InvokeResponse{}, fmt.Errorf("error obteniendo credenciales: %w", err)
+    }
+    // creds.ClientID y creds.ClientSecret ya disponibles como strings
+
     // Extraer arguments del input (puede ser nil)
     var arguments []grantprovider.CommandArgument
     if input.Arguments != nil {
@@ -160,15 +178,10 @@ func (h *GitHubHandler) handleGetToken(arguments []grantprovider.CommandArgument
         }, nil
     }
 
-    // Lógica específica del provider: intercambiar código por token
-    // Aquí se haría el POST al endpoint de token del provider
+    // Lógica específica del provider: intercambiar código por token con las credenciales obtenidas
     return grantprovider.InvokeResponse{
         Result: grantprovider.Result{Success: true, Message: "token obtenido"},
-        Data: &grantprovider.GetAccessTokenData{
-            AccessToken:  "gho_xxxxxxxxxxxx",
-            RefreshToken: "ghr_xxxxxxxxxxxx",
-            ExpiresIn:    3600,
-        },
+        Data:   map[string]any{"access_token": "gho_xxxxxxxxxxxx", "expires_in": 3600},
     }, nil
 }
 
@@ -274,6 +287,8 @@ Ejemplo de entrada JSON esperada:
   "command": "get-token",
   "provider": "github",
   "session_id": "sess-123",
+  "ott": "one-time-token-abc123",
+  "exchange_endpoint": "https://exchange.example.com/api/exchange",
   "arguments": [
     {"name": "code", "value": "abc123def456"}
   ]
@@ -296,12 +311,24 @@ import (
     grantprovider "github.com/KaribuLab/grant-provider"
 )
 
-type Handler struct {
-    ClientID     string
-    ClientSecret string
-}
+type Handler struct{}
 
 func (h *Handler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
+    // Obtener credenciales del cliente vía exchange
+    creds, err := grantprovider.GetClientCredentials(
+        input.Provider,
+        input.SessionID,
+        input.ExchangeEndpoint,
+        grantprovider.ExchangeRequest{
+            Operation: grantprovider.OperationGetClientCredentials,
+            OTT:       input.OTT,
+        },
+    )
+    if err != nil {
+        return grantprovider.InvokeResponse{}, fmt.Errorf("error obteniendo credenciales: %w", err)
+    }
+    // creds.ClientID y creds.ClientSecret ya disponibles como strings
+
     var arguments []grantprovider.CommandArgument
     if input.Arguments != nil {
         arguments = *input.Arguments
@@ -333,10 +360,10 @@ func (h *Handler) getToken(arguments []grantprovider.CommandArgument) (grantprov
         }, nil
     }
 
-    // Lógica específica del provider...
+    // Lógica específica del provider usando las credenciales obtenidas vía exchange...
     return grantprovider.InvokeResponse{
         Result: grantprovider.Result{Success: true},
-        Data:   &grantprovider.GetAccessTokenData{AccessToken: "token"},
+        Data:   map[string]any{"access_token": "token"},
     }, nil
 }
 
@@ -462,9 +489,47 @@ if len(validationErr.Violations) > 0 {
 }
 ```
 
-## Tipos de datos de ejemplo
+## Obtención de credenciales del cliente
 
-- [`GetAccessTokenData`](oauth2.go): estructura con los campos típicos de un token OAuth2 (`access_token`, `refresh_token`, `expires_in`). Útil como tipo concreto para `InvokeResponse.Data`.
+El proveedor recibe en cada `InvokeCommand` un **OTT** (`ott`) y un **endpoint de exchange** (`exchange_endpoint`). Estos permiten recuperar de forma segura las credenciales del cliente (`client_id` y `client_secret`) llamando a [`GetClientCredentials`](oauth2.go).
+
+```go
+func (h *MyHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
+    // Obtener credenciales del cliente usando el OTT recibido en el comando
+    creds, err := grantprovider.GetClientCredentials(
+        input.Provider,
+        input.SessionID,
+        input.ExchangeEndpoint,
+        grantprovider.ExchangeRequest{
+            Operation: grantprovider.OperationGetClientCredentials,
+            OTT:       input.OTT,
+        },
+    )
+    if err != nil {
+        return grantprovider.InvokeResponse{}, fmt.Errorf("error obteniendo credenciales: %w", err)
+    }
+
+    // creds.ClientID y creds.ClientSecret disponibles como strings para usar en las llamadas OAuth2
+    _ = creds.ClientID
+    _ = creds.ClientSecret
+    return grantprovider.InvokeResponse{
+        Result: grantprovider.Result{Success: true, Message: "operación completada"},
+    }, nil
+}
+```
+
+### Tipos del exchange
+
+| Tipo | Descripción |
+|------|-------------|
+| [`ExchangeRequest`](exchange.go) | Body del request: `operation` (usar `OperationGetClientCredentials`) y `ott`. |
+| [`ExchangeReponse`](exchange.go) | Respuesta: `data` (`any`) con las credenciales y `message`. |
+| [`ClientCredentialsData`](oauth2.go) | Estructura con `client_id` y `client_secret` retornados directamente por `GetClientCredentials`. |
+
+El endpoint construido internamente sigue el patrón:
+```
+{exchange_endpoint}/{provider}/{session_id}
+```
 
 ## Dependencias directas relevantes
 
