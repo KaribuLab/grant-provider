@@ -14,8 +14,9 @@ type CommandHandler interface {
 
 // CommandInvoker orquesta decodificación JSON, validación y delegación al handler.
 type CommandInvoker struct {
-	handler  CommandHandler
-	validate *validator.Validate
+	handler         CommandHandler
+	validate        *validator.Validate
+	exchangeFetcher ExchangeFetcher
 }
 
 // NewCommandInvoker crea un invocador que usa el handler dado.

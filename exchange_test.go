@@ -2,11 +2,22 @@ package grantprovider
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// mockExchangeFetcher implementa ExchangeFetcher para tests sin servidor HTTP.
+type mockExchangeFetcher struct {
+	resp ExchangeReponse
+	err  error
+}
+
+func (m *mockExchangeFetcher) Execute(_ ExchangeRequest) (ExchangeReponse, error) {
+	return m.resp, m.err
+}
 
 // exchangeTestServer crea un httptest.Server que responde con la ExchangeReponse dada.
 func exchangeTestServer(t *testing.T, resp ExchangeReponse) *httptest.Server {
@@ -33,7 +44,7 @@ func TestExchangeServiceExecute_Success(t *testing.T) {
 	})
 	defer server.Close()
 
-	svc := ExchangeService{
+	svc := ExchangeFetcherService{
 		Provider:         "test-provider",
 		SessionID:        "session-123",
 		ExchangeEndpoint: server.URL,
@@ -64,7 +75,7 @@ func TestExchangeServiceExecute_BuildsCorrectURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	svc := ExchangeService{
+	svc := ExchangeFetcherService{
 		Provider:         "atlassian",
 		SessionID:        "session-001",
 		ExchangeEndpoint: server.URL,
@@ -87,7 +98,7 @@ func TestExchangeServiceExecute_BuildsCorrectURL(t *testing.T) {
 }
 
 func TestExchangeServiceExecute_HTTPError(t *testing.T) {
-	svc := ExchangeService{
+	svc := ExchangeFetcherService{
 		Provider:         "test-provider",
 		SessionID:        "session-123",
 		ExchangeEndpoint: "http://localhost:1",
@@ -103,9 +114,9 @@ func TestExchangeServiceExecute_HTTPError(t *testing.T) {
 	}
 }
 
-func TestGetClientCredentials_Success(t *testing.T) {
-	// El servidor devuelve ClientCredentialsData en el campo "data" del ExchangeReponse.
-	// GetClientCredentials extrae ese campo vía type assertion.
+// ========== Pruebas para GetClientCredentialsService con servidor HTTP ==========
+
+func TestGetClientCredentialsService_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ContentTypeJSON)
 		_ = json.NewEncoder(w).Encode(ExchangeReponse{
@@ -115,12 +126,17 @@ func TestGetClientCredentials_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	creds, err := GetClientCredentials(
-		"atlassian",
-		"session-001",
-		server.URL,
-		ExchangeRequest{Operation: OperationGetClientCredentials, OTT: "my-ott"},
-	)
+	fetcher := &ExchangeFetcherService{
+		Provider:         "atlassian",
+		SessionID:        "session-001",
+		ExchangeEndpoint: server.URL,
+	}
+	svc := &GetClientCredentialsService{ExchangeFetcher: fetcher}
+
+	creds, err := svc.Execute(ExchangeRequest{
+		Operation: OperationGetClientCredentials,
+		OTT:       "my-ott",
+	})
 
 	if err != nil {
 		t.Fatalf("esperaba nil error, obtuve: %v", err)
@@ -133,15 +149,66 @@ func TestGetClientCredentials_Success(t *testing.T) {
 	}
 }
 
-func TestGetClientCredentials_NetworkError(t *testing.T) {
-	_, err := GetClientCredentials(
-		"atlassian",
-		"session-001",
-		"http://localhost:1",
-		ExchangeRequest{Operation: OperationGetClientCredentials, OTT: "my-ott"},
-	)
+func TestGetClientCredentialsService_NetworkError(t *testing.T) {
+	fetcher := &ExchangeFetcherService{
+		Provider:         "atlassian",
+		SessionID:        "session-001",
+		ExchangeEndpoint: "http://localhost:1",
+	}
+	svc := &GetClientCredentialsService{ExchangeFetcher: fetcher}
+
+	_, err := svc.Execute(ExchangeRequest{
+		Operation: OperationGetClientCredentials,
+		OTT:       "my-ott",
+	})
 
 	if err == nil {
 		t.Fatal("esperaba error de red, obtuve nil")
+	}
+}
+
+// ========== Pruebas para GetClientCredentialsService con mock (sin servidor HTTP) ==========
+
+func TestGetClientCredentialsService_MockSuccess(t *testing.T) {
+	mock := &mockExchangeFetcher{
+		resp: ExchangeReponse{
+			Data:    ClientCredentialsData{ClientID: "mock-client", ClientSecret: "mock-secret"},
+			Message: "ok",
+		},
+	}
+	svc := &GetClientCredentialsService{ExchangeFetcher: mock}
+
+	creds, err := svc.Execute(ExchangeRequest{
+		Operation: OperationGetClientCredentials,
+		OTT:       "any-ott",
+	})
+
+	if err != nil {
+		t.Fatalf("esperaba nil error, obtuve: %v", err)
+	}
+	if creds.ClientID != "mock-client" {
+		t.Errorf("ClientID inesperado: %q", creds.ClientID)
+	}
+	if creds.ClientSecret != "mock-secret" {
+		t.Errorf("ClientSecret inesperado: %q", creds.ClientSecret)
+	}
+}
+
+func TestGetClientCredentialsService_MockFetcherError(t *testing.T) {
+	mock := &mockExchangeFetcher{
+		err: errors.New("error simulado del fetcher"),
+	}
+	svc := &GetClientCredentialsService{ExchangeFetcher: mock}
+
+	_, err := svc.Execute(ExchangeRequest{
+		Operation: OperationGetClientCredentials,
+		OTT:       "any-ott",
+	})
+
+	if err == nil {
+		t.Fatal("esperaba error del fetcher, obtuve nil")
+	}
+	if err.Error() != "error simulado del fetcher" {
+		t.Errorf("mensaje de error inesperado: %v", err)
 	}
 }

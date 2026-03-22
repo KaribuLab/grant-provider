@@ -21,13 +21,15 @@ go get github.com/KaribuLab/grant-provider
 | [`CommandHandler`](command.go) | Tu implementación: recibe `InvokeCommand` y devuelve `InvokeResponse`. |
 | [`CommandInvoker`](command.go) | Lee JSON desde un `io.Reader` (p. ej. `stdin`), valida y delega en el handler. |
 | [`NewOAuth2Command`](oauth2.go) | Crea el comando raíz `oauth2` con subcomandos `get-token` y `get-url`. Úsalo directamente como root del binario. |
+| [`OAuth2CommandHandler`](oauth2.go) | Extiende `CommandHandler` con `GetExecutorFetcher` para que el provider construya el `ExchangeFetcher`. |
 | [`ValidateOAuth2GetURL`](oauth2.go) | Valida argumentos requeridos para generar URL de autorización. |
 | [`ValidateOAuth2GetToken`](oauth2.go) | Valida argumentos requeridos para obtener token de acceso. |
-| [`GetClientCredentials`](oauth2.go) | Retorna `ClientCredentialsData` con `client_id` y `client_secret` obtenidos del endpoint de exchange usando el OTT. |
-| [`ExchangeService`](exchange.go) | Realiza el HTTP POST al endpoint de exchange para intercambiar un OTT por datos. |
+| [`GetClientCredentialsService`](oauth2.go) | Obtiene `ClientCredentialsData` delegando en un `ExchangeFetcher` inyectado. Testeable sin HTTP. |
+| [`ClientCredentialsData`](oauth2.go) | Estructura con `client_id` y `client_secret` retornados por `GetClientCredentialsService.Execute`. |
+| [`ExchangeFetcher`](exchange.go) | Interfaz para ejecutar el intercambio OTT→datos. Permite mockear en tests de providers. |
+| [`ExchangeFetcherService`](exchange.go) | Implementación de `ExchangeFetcher` que realiza el HTTP POST real al endpoint de exchange. |
 | [`ExchangeRequest`](exchange.go) | Cuerpo del request al exchange: `operation` y `ott`. |
 | [`ExchangeReponse`](exchange.go) | Respuesta del exchange: `data` (`any`) y `message`. |
-| [`ClientCredentialsData`](oauth2.go) | Estructura con `client_id` y `client_secret` retornados directamente por `GetClientCredentials`. |
 
 ## Uso rápido: invocador por stdin
 
@@ -127,19 +129,20 @@ type GitHubHandler struct{}
 // Invoke recibe el InvokeCommand ya decodificado desde stdin.
 func (h *GitHubHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
     // Obtener credenciales usando el OTT y el endpoint de exchange recibidos en el comando
-    creds, err := grantprovider.GetClientCredentials(
-        input.Provider,
-        input.SessionID,
-        input.ExchangeEndpoint,
-        grantprovider.ExchangeRequest{
-            Operation: grantprovider.OperationGetClientCredentials,
-            OTT:       input.OTT,
-        },
-    )
+    fetcher := &grantprovider.ExchangeFetcherService{
+        Provider:         input.Provider,
+        SessionID:        input.SessionID,
+        ExchangeEndpoint: input.ExchangeEndpoint,
+    }
+    svc := &grantprovider.GetClientCredentialsService{ExchangeFetcher: fetcher}
+    creds, err := svc.Execute(grantprovider.ExchangeRequest{
+        Operation: grantprovider.OperationGetClientCredentials,
+        OTT:       input.OTT,
+    })
     if err != nil {
         return grantprovider.InvokeResponse{}, fmt.Errorf("error obteniendo credenciales: %w", err)
     }
-    // creds.ClientID y creds.ClientSecret ya disponibles como strings
+    // creds.ClientID y creds.ClientSecret disponibles como strings
 
     // Extraer arguments del input (puede ser nil)
     var arguments []grantprovider.CommandArgument
@@ -315,19 +318,20 @@ type Handler struct{}
 
 func (h *Handler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
     // Obtener credenciales del cliente vía exchange
-    creds, err := grantprovider.GetClientCredentials(
-        input.Provider,
-        input.SessionID,
-        input.ExchangeEndpoint,
-        grantprovider.ExchangeRequest{
-            Operation: grantprovider.OperationGetClientCredentials,
-            OTT:       input.OTT,
-        },
-    )
+    fetcher := &grantprovider.ExchangeFetcherService{
+        Provider:         input.Provider,
+        SessionID:        input.SessionID,
+        ExchangeEndpoint: input.ExchangeEndpoint,
+    }
+    svc := &grantprovider.GetClientCredentialsService{ExchangeFetcher: fetcher}
+    creds, err := svc.Execute(grantprovider.ExchangeRequest{
+        Operation: grantprovider.OperationGetClientCredentials,
+        OTT:       input.OTT,
+    })
     if err != nil {
         return grantprovider.InvokeResponse{}, fmt.Errorf("error obteniendo credenciales: %w", err)
     }
-    // creds.ClientID y creds.ClientSecret ya disponibles como strings
+    // creds.ClientID y creds.ClientSecret disponibles como strings
 
     var arguments []grantprovider.CommandArgument
     if input.Arguments != nil {
@@ -491,25 +495,29 @@ if len(validationErr.Violations) > 0 {
 
 ## Obtención de credenciales del cliente
 
-El proveedor recibe en cada `InvokeCommand` un **OTT** (`ott`) y un **endpoint de exchange** (`exchange_endpoint`). Estos permiten recuperar de forma segura las credenciales del cliente (`client_id` y `client_secret`) llamando a [`GetClientCredentials`](oauth2.go).
+El proveedor recibe en cada `InvokeCommand` un **OTT** (`ott`) y un **endpoint de exchange** (`exchange_endpoint`). Con estos datos se construye un [`GetClientCredentialsService`](oauth2.go) que, al llamar a `Execute`, retorna `ClientCredentialsData` con el `client_id` y `client_secret`.
+
+La separación entre `GetClientCredentialsService` y `ExchangeFetcher` permite testear los providers **sin servidor HTTP**, inyectando un mock:
 
 ```go
 func (h *MyHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
-    // Obtener credenciales del cliente usando el OTT recibido en el comando
-    creds, err := grantprovider.GetClientCredentials(
-        input.Provider,
-        input.SessionID,
-        input.ExchangeEndpoint,
-        grantprovider.ExchangeRequest{
-            Operation: grantprovider.OperationGetClientCredentials,
-            OTT:       input.OTT,
-        },
-    )
+    // En producción usar ExchangeFetcherService; en tests inyectar un mock de ExchangeFetcher
+    fetcher := &grantprovider.ExchangeFetcherService{
+        Provider:         input.Provider,
+        SessionID:        input.SessionID,
+        ExchangeEndpoint: input.ExchangeEndpoint,
+    }
+    svc := &grantprovider.GetClientCredentialsService{ExchangeFetcher: fetcher}
+
+    creds, err := svc.Execute(grantprovider.ExchangeRequest{
+        Operation: grantprovider.OperationGetClientCredentials,
+        OTT:       input.OTT,
+    })
     if err != nil {
         return grantprovider.InvokeResponse{}, fmt.Errorf("error obteniendo credenciales: %w", err)
     }
 
-    // creds.ClientID y creds.ClientSecret disponibles como strings para usar en las llamadas OAuth2
+    // creds.ClientID y creds.ClientSecret disponibles como strings
     _ = creds.ClientID
     _ = creds.ClientSecret
     return grantprovider.InvokeResponse{
@@ -518,18 +526,49 @@ func (h *MyHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.Inv
 }
 ```
 
+### Test de un provider sin servidor HTTP
+
+La interfaz `ExchangeFetcher` permite inyectar un mock en los tests del provider:
+
+```go
+type mockExchangeFetcher struct {
+    resp grantprovider.ExchangeReponse
+    err  error
+}
+
+func (m *mockExchangeFetcher) Execute(_ grantprovider.ExchangeRequest) (grantprovider.ExchangeReponse, error) {
+    return m.resp, m.err
+}
+
+func TestMyHandler_GetToken(t *testing.T) {
+    mock := &mockExchangeFetcher{
+        resp: grantprovider.ExchangeReponse{
+            Data: grantprovider.ClientCredentialsData{
+                ClientID:     "my-client-id",
+                ClientSecret: "my-client-secret",
+            },
+        },
+    }
+    svc := &grantprovider.GetClientCredentialsService{ExchangeFetcher: mock}
+
+    creds, err := svc.Execute(grantprovider.ExchangeRequest{
+        Operation: grantprovider.OperationGetClientCredentials,
+        OTT:       "any-ott",
+    })
+    // Verificar creds.ClientID y creds.ClientSecret...
+}
+```
+
 ### Tipos del exchange
 
 | Tipo | Descripción |
 |------|-------------|
+| [`ExchangeFetcher`](exchange.go) | Interfaz: `Execute(ExchangeRequest) (ExchangeReponse, error)`. Implementar para mockear en tests. |
+| [`ExchangeFetcherService`](exchange.go) | Implementación HTTP real. URL: `{exchange_endpoint}/{provider}/{session_id}`. |
 | [`ExchangeRequest`](exchange.go) | Body del request: `operation` (usar `OperationGetClientCredentials`) y `ott`. |
-| [`ExchangeReponse`](exchange.go) | Respuesta: `data` (`any`) con las credenciales y `message`. |
-| [`ClientCredentialsData`](oauth2.go) | Estructura con `client_id` y `client_secret` retornados directamente por `GetClientCredentials`. |
-
-El endpoint construido internamente sigue el patrón:
-```
-{exchange_endpoint}/{provider}/{session_id}
-```
+| [`ExchangeReponse`](exchange.go) | Respuesta: `data` (`any`) con el payload y `message`. |
+| [`GetClientCredentialsService`](oauth2.go) | Usa un `ExchangeFetcher` para obtener y deserializar `ClientCredentialsData`. |
+| [`ClientCredentialsData`](oauth2.go) | Resultado: `client_id` y `client_secret` como strings. |
 
 ## Dependencias directas relevantes
 

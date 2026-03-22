@@ -41,6 +41,16 @@ func NewOAuth2Command(provider string, oauth2Commands OAuth2Commands) (*cobra.Co
 	return oauth2RootCommand, nil
 }
 
+// OAuth2CommandHandler extiende CommandHandler con la capacidad de construir el ExchangeFetcher
+// necesario para obtener credenciales del cliente durante la ejecución de un comando OAuth2.
+// Los providers deben implementar esta interfaz para integrarse con GetClientCredentialsService.
+type OAuth2CommandHandler interface {
+	CommandHandler
+	// GetExecutorFetcher construye el ExchangeFetcher que será usado por GetClientCredentialsService
+	// para intercambiar el OTT por credenciales en el endpoint de exchange.
+	GetExecutorFetcher(provider string, sessionID string, exchangeEndpoint string) ExchangeFetcher
+}
+
 // requiredGetURLParams define los parámetros obligatorios para get-url.
 var requiredGetURLParams = []string{
 	"response_type",
@@ -117,18 +127,24 @@ func ValidateOAuth2GetToken(arguments []CommandArgument) (ValidationError, error
 	return ValidationError{}, nil
 }
 
+// ClientCredentialsData contiene las credenciales del cliente OAuth2 retornadas por el exchange.
 type ClientCredentialsData struct {
 	ClientID     string `json:"client_id" validate:"required"`
-	ClientSecret string `json:"client_secret" validate:"rquired"`
+	ClientSecret string `json:"client_secret" validate:"required"`
 }
 
-func GetClientCredentials(provider string, sessionID string, exchangeEndpoint string, exchangeRequest ExchangeRequest) (ClientCredentialsData, error) {
-	exchangeService := ExchangeService{
-		Provider:         provider,
-		SessionID:        sessionID,
-		ExchangeEndpoint: exchangeEndpoint,
-	}
-	exchangeResponse, err := exchangeService.Execute(exchangeRequest)
+// GetClientCredentialsService obtiene ClientCredentialsData a través de un ExchangeFetcher.
+// Al depender de la interfaz ExchangeFetcher, puede probarse sin servidor HTTP usando un mock.
+type GetClientCredentialsService struct {
+	// ExchangeFetcher es la implementación que realiza el intercambio efectivo del OTT.
+	// En producción usar ExchangeFetcherService; en tests usar un mock.
+	ExchangeFetcher
+}
+
+// Execute intercambia el OTT por credenciales de cliente.
+// Llama a ExchangeFetcher.Execute y decodifica ExchangeReponse.Data en ClientCredentialsData.
+func (g *GetClientCredentialsService) Execute(exchangeRequest ExchangeRequest) (ClientCredentialsData, error) {
+	exchangeResponse, err := g.ExchangeFetcher.Execute(exchangeRequest)
 	if err != nil {
 		return ClientCredentialsData{}, err
 	}
