@@ -140,11 +140,8 @@ func (h *GitHubHandler) SetCredentialsService(s grantprovider.GetClientCredentia
 
 // Invoke recibe el InvokeCommand ya decodificado desde stdin.
 func (h *GitHubHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
-    // credentialsService fue inyectado por OAuth2CommandInvoker antes de esta llamada
-    creds, err := h.credentialsService.Execute(grantprovider.ExchangeRequest{
-        Operation: grantprovider.OperationGetClientCredentials,
-        OTT:       input.OTT,
-    })
+    // credentialsService fue inyectado por OAuth2CommandInvoker (OTT y fetcher ya configurados)
+    creds, err := h.credentialsService.Execute()
     if err != nil {
         return grantprovider.InvokeResponse{}, fmt.Errorf("error obteniendo credenciales: %w", err)
     }
@@ -231,15 +228,13 @@ func (h *GitHubHandler) handleGetURL(arguments []grantprovider.CommandArgument) 
     }, nil
 }
 
-// exchangeFactory construye el GetClientCredentialsService a partir del InvokeCommand decodificado.
-// Se pasa a NewOAuth2CommandInvoker para que cada invocación inyecte el servicio correcto.
-func exchangeFactory(cmd grantprovider.InvokeCommand) grantprovider.GetClientCredentialsService {
-    return grantprovider.GetClientCredentialsService{
-        ExchangeFetcher: &grantprovider.ExchangeFetcherService{
-            Provider:         cmd.Provider,
-            SessionID:        cmd.SessionID,
-            ExchangeEndpoint: cmd.ExchangeEndpoint,
-        },
+// exchangeFactory construye el ExchangeFetcher a partir del InvokeCommand decodificado.
+// OAuth2CommandInvoker lo usa para crear el GetClientCredentialsService con el fetcher y el OTT.
+func exchangeFactory(cmd grantprovider.InvokeCommand) grantprovider.ExchangeFetcher {
+    return &grantprovider.ExchangeFetcherService{
+        Provider:         cmd.Provider,
+        SessionID:        cmd.SessionID,
+        ExchangeEndpoint: cmd.ExchangeEndpoint,
     }
 }
 
@@ -248,7 +243,7 @@ func buildCmd(handler *GitHubHandler, use, short string) *cobra.Command {
         Use:   use,
         Short: short,
         RunE: func(cmd *cobra.Command, args []string) error {
-            // OAuth2CommandInvoker inyecta el GetClientCredentialsService en el handler antes de Invoke
+            // OAuth2CommandInvoker inyecta el GetClientCredentialsService (con OTT) en el handler
             invoker := grantprovider.NewOAuth2CommandInvoker(handler, exchangeFactory)
             response, err := invoker.Run(os.Stdin)
             _ = grantprovider.ToJSON(response, os.Stdout)
@@ -332,11 +327,8 @@ func (h *Handler) SetCredentialsService(s grantprovider.GetClientCredentialsServ
 }
 
 func (h *Handler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
-    // credentialsService fue inyectado por OAuth2CommandInvoker antes de esta llamada
-    creds, err := h.credentialsService.Execute(grantprovider.ExchangeRequest{
-        Operation: grantprovider.OperationGetClientCredentials,
-        OTT:       input.OTT,
-    })
+    // credentialsService fue inyectado por OAuth2CommandInvoker (OTT y fetcher ya configurados)
+    creds, err := h.credentialsService.Execute()
     if err != nil {
         return grantprovider.InvokeResponse{}, fmt.Errorf("error obteniendo credenciales: %w", err)
     }
@@ -444,13 +436,11 @@ func buildCmd(handler *github.Handler, commandName string) *cobra.Command {
         Use:   commandName,
         Short: fmt.Sprintf("OAuth2 %s para GitHub", commandName),
         RunE: func(cmd *cobra.Command, args []string) error {
-            factory := func(c grantprovider.InvokeCommand) grantprovider.GetClientCredentialsService {
-                return grantprovider.GetClientCredentialsService{
-                    ExchangeFetcher: &grantprovider.ExchangeFetcherService{
-                        Provider:         c.Provider,
-                        SessionID:        c.SessionID,
-                        ExchangeEndpoint: c.ExchangeEndpoint,
-                    },
+            factory := func(c grantprovider.InvokeCommand) grantprovider.ExchangeFetcher {
+                return &grantprovider.ExchangeFetcherService{
+                    Provider:         c.Provider,
+                    SessionID:        c.SessionID,
+                    ExchangeEndpoint: c.ExchangeEndpoint,
                 }
             }
             invoker := grantprovider.NewOAuth2CommandInvoker(handler, factory)
@@ -469,8 +459,8 @@ Si falta algún comando requerido, `NewOAuth2Command` retorna error indicando cu
 [`OAuth2CommandInvoker`](oauth2.go) extiende [`CommandInvoker`](command.go) para el flujo OAuth2. Su `Run` realiza tres pasos adicionales antes de delegar en `CommandInvoker`:
 
 1. Decodifica el `InvokeCommand` del stdin para obtener `provider`, `session_id`, `ott` y `exchange_endpoint`.
-2. Llama a `ExchangeFetcherFactory(command)` para construir el `GetClientCredentialsService` configurado con esos valores.
-3. Inyecta el servicio en el handler vía `SetCredentialsService`, dejándolo listo para que `Invoke` obtenga credenciales.
+2. Llama a `ExchangeFetcherFactory(command)` para construir el `ExchangeFetcher` configurado con esos valores.
+3. Construye un `GetClientCredentialsService{ExchangeFetcher: fetcher, OTT: command.OTT}` y lo inyecta en el handler vía `SetCredentialsService`, dejándolo listo para que `Invoke` llame a `Execute()` sin parámetros.
 
 Usar siempre `NewOAuth2CommandInvoker` (no la struct directamente) para garantizar en tiempo de construcción que el handler implementa `OAuth2CommandHandler`:
 
@@ -487,11 +477,8 @@ type MyHandler struct {
 }
 
 func (h *MyHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
-    // credentialsService ya fue inyectado por OAuth2CommandInvoker
-    creds, err := h.credentialsService.Execute(grantprovider.ExchangeRequest{
-        Operation: grantprovider.OperationGetClientCredentials,
-        OTT:       input.OTT,
-    })
+    // credentialsService fue inyectado por OAuth2CommandInvoker (OTT y fetcher ya configurados)
+    creds, err := h.credentialsService.Execute()
     // ... usar creds.ClientID y creds.ClientSecret ...
 }
 
@@ -552,18 +539,14 @@ if len(validationErr.Violations) > 0 {
 
 ## Obtención de credenciales del cliente
 
-El proveedor recibe en cada `InvokeCommand` un **OTT** (`ott`) y un **endpoint de exchange** (`exchange_endpoint`). Con `OAuth2CommandInvoker`, la `ExchangeFetcherFactory` construye el [`GetClientCredentialsService`](oauth2.go) y lo inyecta en el handler antes de que `Invoke` sea llamado. El handler solo necesita llamar a `Execute` con el OTT.
+El proveedor recibe en cada `InvokeCommand` un **OTT** (`ott`) y un **endpoint de exchange** (`exchange_endpoint`). Con `OAuth2CommandInvoker`, la `ExchangeFetcherFactory` construye el `ExchangeFetcher`, que el invoker combina con el OTT para formar el [`GetClientCredentialsService`](oauth2.go) que inyecta en el handler. El handler solo necesita llamar a `Execute()` sin parámetros.
 
-La separación entre `GetClientCredentialsService` y `ExchangeFetcher` permite testear los providers **sin servidor HTTP**, inyectando un mock de `ExchangeFetcher` al crear el servicio:
+La separación entre `GetClientCredentialsService` y `ExchangeFetcher` permite testear los providers **sin servidor HTTP**, usando un mock de `ExchangeFetcher` en la factory:
 
 ```go
 func (h *MyHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.InvokeResponse, error) {
-    // credentialsService ya fue inyectado por OAuth2CommandInvoker (en producción
-    // contiene un ExchangeFetcherService real; en tests, un mock de ExchangeFetcher)
-    creds, err := h.credentialsService.Execute(grantprovider.ExchangeRequest{
-        Operation: grantprovider.OperationGetClientCredentials,
-        OTT:       input.OTT,
-    })
+    // credentialsService fue inyectado por OAuth2CommandInvoker (OTT y fetcher ya configurados)
+    creds, err := h.credentialsService.Execute()
     if err != nil {
         return grantprovider.InvokeResponse{}, fmt.Errorf("error obteniendo credenciales: %w", err)
     }
@@ -579,7 +562,7 @@ func (h *MyHandler) Invoke(input grantprovider.InvokeCommand) (grantprovider.Inv
 
 ### Test de un provider sin servidor HTTP
 
-Al usar `OAuth2CommandInvoker`, la factory del test puede devolver un `GetClientCredentialsService` con un `ExchangeFetcher` mock, sin necesidad de levantar un servidor HTTP:
+Al usar `OAuth2CommandInvoker`, la factory del test puede devolver un `ExchangeFetcher` mock; el invoker se encarga de construir el `GetClientCredentialsService` con el OTT del comando, sin necesidad de levantar un servidor HTTP:
 
 ```go
 type mockExchangeFetcher struct {
@@ -602,8 +585,8 @@ func TestMyHandler_GetToken(t *testing.T) {
     }
 
     handler := &MyHandler{}
-    factory := func(_ grantprovider.InvokeCommand) grantprovider.GetClientCredentialsService {
-        return grantprovider.GetClientCredentialsService{ExchangeFetcher: mock}
+    factory := func(_ grantprovider.InvokeCommand) grantprovider.ExchangeFetcher {
+        return mock
     }
     invoker := grantprovider.NewOAuth2CommandInvoker(handler, factory)
 

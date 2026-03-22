@@ -131,12 +131,9 @@ func TestGetClientCredentialsService_Success(t *testing.T) {
 		SessionID:        "session-001",
 		ExchangeEndpoint: server.URL,
 	}
-	svc := &GetClientCredentialsService{ExchangeFetcher: fetcher}
+	svc := &GetClientCredentialsService{ExchangeFetcher: fetcher, OTT: "my-ott"}
 
-	creds, err := svc.Execute(ExchangeRequest{
-		Operation: OperationGetClientCredentials,
-		OTT:       "my-ott",
-	})
+	creds, err := svc.Execute()
 
 	if err != nil {
 		t.Fatalf("esperaba nil error, obtuve: %v", err)
@@ -155,12 +152,9 @@ func TestGetClientCredentialsService_NetworkError(t *testing.T) {
 		SessionID:        "session-001",
 		ExchangeEndpoint: "http://localhost:1",
 	}
-	svc := &GetClientCredentialsService{ExchangeFetcher: fetcher}
+	svc := &GetClientCredentialsService{ExchangeFetcher: fetcher, OTT: "my-ott"}
 
-	_, err := svc.Execute(ExchangeRequest{
-		Operation: OperationGetClientCredentials,
-		OTT:       "my-ott",
-	})
+	_, err := svc.Execute()
 
 	if err == nil {
 		t.Fatal("esperaba error de red, obtuve nil")
@@ -176,12 +170,9 @@ func TestGetClientCredentialsService_MockSuccess(t *testing.T) {
 			Message: "ok",
 		},
 	}
-	svc := &GetClientCredentialsService{ExchangeFetcher: mock}
+	svc := &GetClientCredentialsService{ExchangeFetcher: mock, OTT: "any-ott"}
 
-	creds, err := svc.Execute(ExchangeRequest{
-		Operation: OperationGetClientCredentials,
-		OTT:       "any-ott",
-	})
+	creds, err := svc.Execute()
 
 	if err != nil {
 		t.Fatalf("esperaba nil error, obtuve: %v", err)
@@ -198,12 +189,9 @@ func TestGetClientCredentialsService_MockFetcherError(t *testing.T) {
 	mock := &mockExchangeFetcher{
 		err: errors.New("error simulado del fetcher"),
 	}
-	svc := &GetClientCredentialsService{ExchangeFetcher: mock}
+	svc := &GetClientCredentialsService{ExchangeFetcher: mock, OTT: "any-ott"}
 
-	_, err := svc.Execute(ExchangeRequest{
-		Operation: OperationGetClientCredentials,
-		OTT:       "any-ott",
-	})
+	_, err := svc.Execute()
 
 	if err == nil {
 		t.Fatal("esperaba error del fetcher, obtuve nil")

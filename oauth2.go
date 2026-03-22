@@ -79,9 +79,10 @@ func NewOAuth2CommandInvoker(handler OAuth2CommandHandler, factory ExchangeFetch
 	}
 }
 
-// Run decodifica el InvokeCommand desde stdin, construye el GetClientCredentialsService
-// con ExchangeFetcherFactory, lo inyecta en el handler vía SetCredentialsService y
-// delega el resto del flujo (validación e Invoke) en CommandInvoker.Run.
+// Run decodifica el InvokeCommand desde stdin, construye un GetClientCredentialsService
+// usando ExchangeFetcherFactory para el fetcher y OTT del comando, lo inyecta en el
+// handler vía SetCredentialsService y delega el resto del flujo (validación e Invoke)
+// en CommandInvoker.Run.
 // Retorna error si el handler no implementa OAuth2CommandHandler, el JSON es
 // inválido o la serialización interna falla.
 func (ci *OAuth2CommandInvoker) Run(stdin io.Reader) (InvokeResponse, error) {
@@ -94,7 +95,10 @@ func (ci *OAuth2CommandInvoker) Run(stdin io.Reader) (InvokeResponse, error) {
 	if !ok {
 		return InvokeResponse{}, fmt.Errorf("el handler no implementa OAuth2CommandHandler")
 	}
-	handler.SetCredentialsService(ci.ExchangeFetcherFactory(command))
+	handler.SetCredentialsService(GetClientCredentialsService{
+		ExchangeFetcher: ci.ExchangeFetcherFactory(command),
+		OTT:             command.OTT,
+	})
 
 	// Re-serializar el comando para que CommandInvoker.Run pueda leerlo desde un io.Reader.
 	writer := new(bytes.Buffer)
@@ -186,18 +190,25 @@ type ClientCredentialsData struct {
 	ClientSecret string `json:"client_secret" validate:"required"`
 }
 
-// GetClientCredentialsService obtiene ClientCredentialsData a través de un ExchangeFetcher.
-// Al depender de la interfaz ExchangeFetcher, puede probarse sin servidor HTTP usando un mock.
+// GetClientCredentialsService obtiene ClientCredentialsData intercambiando un OTT
+// a través de un ExchangeFetcher. Al depender de la interfaz ExchangeFetcher,
+// puede probarse sin servidor HTTP usando un mock.
 type GetClientCredentialsService struct {
-	// ExchangeFetcher es la implementación que realiza el intercambio efectivo del OTT.
+	// ExchangeFetcher realiza el intercambio efectivo del OTT.
 	// En producción usar ExchangeFetcherService; en tests usar un mock.
 	ExchangeFetcher
+	// OTT es el one-time token recibido en InvokeCommand, inyectado por OAuth2CommandInvoker.
+	OTT string
 }
 
-// Execute intercambia el OTT por credenciales de cliente.
-// Llama a ExchangeFetcher.Execute y decodifica ExchangeReponse.Data en ClientCredentialsData.
-func (g *GetClientCredentialsService) Execute(exchangeRequest ExchangeRequest) (ClientCredentialsData, error) {
-	exchangeResponse, err := g.ExchangeFetcher.Execute(exchangeRequest)
+// Execute intercambia el OTT almacenado en el servicio por credenciales de cliente.
+// Construye el ExchangeRequest con OperationGetClientCredentials y el OTT del struct,
+// delega en ExchangeFetcher.Execute y deserializa ExchangeReponse.Data en ClientCredentialsData.
+func (g *GetClientCredentialsService) Execute() (ClientCredentialsData, error) {
+	exchangeResponse, err := g.ExchangeFetcher.Execute(ExchangeRequest{
+		Operation: OperationGetClientCredentials,
+		OTT:       g.OTT,
+	})
 	if err != nil {
 		return ClientCredentialsData{}, err
 	}

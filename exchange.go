@@ -31,22 +31,20 @@ type ExchangeReponse struct {
 	Message string `json:"message" validate:"required"`
 }
 
-// ExchangeFetcherFactory es el tipo de función que construye un GetClientCredentialsService
+// ExchangeFetcherFactory es el tipo de función que construye un ExchangeFetcher
 // a partir de un InvokeCommand ya decodificado.
-// Se pasa a NewOAuth2CommandInvoker para que cada invocación cree el servicio configurado
-// con el provider, sessionID y exchangeEndpoint del comando.
+// Se pasa a NewOAuth2CommandInvoker, que la usa para crear el ExchangeFetcher y
+// luego construir el GetClientCredentialsService con el fetcher y el OTT del comando.
 // Ejemplo de implementación típica:
 //
-//	func(cmd InvokeCommand) GetClientCredentialsService {
-//		return GetClientCredentialsService{
-//			ExchangeFetcher: &ExchangeFetcherService{
-//				Provider:         cmd.Provider,
-//				SessionID:        cmd.SessionID,
-//				ExchangeEndpoint: cmd.ExchangeEndpoint,
-//			},
+//	func(cmd InvokeCommand) ExchangeFetcher {
+//		return &ExchangeFetcherService{
+//			Provider:         cmd.Provider,
+//			SessionID:        cmd.SessionID,
+//			ExchangeEndpoint: cmd.ExchangeEndpoint,
 //		}
 //	}
-type ExchangeFetcherFactory = func(InvokeCommand) GetClientCredentialsService
+type ExchangeFetcherFactory = func(InvokeCommand) ExchangeFetcher
 
 // ExchangeFetcher define el contrato para ejecutar un intercambio con el endpoint de exchange.
 // Implementar esta interfaz permite sustituir ExchangeFetcherService por un mock en tests.
